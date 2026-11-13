@@ -1,0 +1,6 @@
+{
+  "name": "Barbería Estudio — Sistema de Agendamiento",
+  "description": "Sistema web profesional para administración y agendamiento de citas de barbería con Next.js, TypeScript, Firebase y Resend.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

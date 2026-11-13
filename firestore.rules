@@ -1,0 +1,373 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Red de seguridad global: denegar todo por defecto
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitivas de validación e identidad ---
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'fabiaski13@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role == 'admin' &&
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    function isBarber() {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role == 'barbero' &&
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.active == true;
+    }
+
+    // --- Helpers de validación de esquema (Anti-Update-Gap) ---
+    function isValidUsuario(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'displayName', 'role', 'barberId', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 120 &&
+        data.role in ['admin', 'barbero'] &&
+        data.active is bool &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+        (!('barberId' in data) || isValidId(data.barberId)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBarbero(data) {
+      return data.keys().hasAll(['id', 'userId', 'name', 'specialty', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'name', 'specialty', 'bio', 'photoUrl', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
+        data.specialty is string && data.specialty.size() >= 2 && data.specialty.size() <= 120 &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCliente(data) {
+      return data.keys().hasAll(['id', 'fullName', 'phone', 'email', 'totalAppointments', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'fullName', 'phone', 'email', 'totalAppointments', 'lastAppointmentAt', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.fullName is string && data.fullName.size() >= 3 && data.fullName.size() <= 120 &&
+        data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 20 &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        data.totalAppointments is number && data.totalAppointments >= 0 &&
+        (!('lastAppointmentAt' in data) || data.lastAppointmentAt is timestamp) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidServicio(data) {
+      return data.keys().hasAll(['id', 'name', 'description', 'priceCop', 'durationMinutes', 'active', 'order', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'description', 'priceCop', 'durationMinutes', 'active', 'order', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+        data.description is string && data.description.size() >= 2 && data.description.size() <= 400 &&
+        data.priceCop is number && data.priceCop > 0 &&
+        data.durationMinutes is number && data.durationMinutes >= 10 && data.durationMinutes <= 360 &&
+        data.active is bool &&
+        data.order is number && data.order >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCita(data) {
+      return data.keys().hasAll([
+          'id', 'clientId', 'clientName', 'clientPhone', 'clientEmail',
+          'barberId', 'barberUid', 'barberName', 'serviceId', 'serviceName',
+          'priceCop', 'durationMinutes', 'date', 'startTime', 'endTime',
+          'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'clientId', 'clientName', 'clientPhone', 'clientEmail',
+          'barberId', 'barberUid', 'barberName', 'serviceId', 'serviceName',
+          'priceCop', 'durationMinutes', 'date', 'startTime', 'endTime',
+          'status', 'notes', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.clientId) &&
+        data.clientName is string && data.clientName.size() >= 3 && data.clientName.size() <= 120 &&
+        data.clientPhone is string && data.clientPhone.size() >= 7 && data.clientPhone.size() <= 20 &&
+        data.clientEmail is string && data.clientEmail.size() >= 5 && data.clientEmail.size() <= 160 &&
+        isValidId(data.barberId) &&
+        isValidId(data.barberUid) &&
+        data.barberName is string && data.barberName.size() >= 2 && data.barberName.size() <= 120 &&
+        isValidId(data.serviceId) &&
+        data.serviceName is string && data.serviceName.size() >= 2 && data.serviceName.size() <= 100 &&
+        data.priceCop is number && data.priceCop > 0 &&
+        data.durationMinutes is number && data.durationMinutes >= 15 && data.durationMinutes <= 360 &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.startTime is string && data.startTime.size() == 5 && data.startTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$') &&
+        data.endTime is string && data.endTime.size() == 5 && data.endTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$') &&
+        data.status in ['confirmada', 'en_proceso', 'finalizada', 'cancelada', 'no_asistio'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHorario(data) {
+      return data.keys().hasAll(['id', 'isPublic', 'days', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'barberId', 'isPublic', 'days', 'updatedAt']) &&
+        isValidId(data.id) &&
+        (!('barberId' in data) || isValidId(data.barberId)) &&
+        data.isPublic is bool &&
+        data.days is list && data.days.size() == 7 && data.days[0] is map &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBloqueo(data) {
+      return data.keys().hasAll(['id', 'barberId', 'date', 'allDay', 'reason', 'createdBy', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'barberId', 'barberUid', 'date', 'allDay', 'startTime', 'endTime', 'reason', 'createdBy', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.barberId) &&
+        (!('barberUid' in data) || isValidId(data.barberUid)) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.allDay is bool &&
+        (!('startTime' in data) || (data.startTime is string && data.startTime.size() == 5 && data.startTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$'))) &&
+        (!('endTime' in data) || (data.endTime is string && data.endTime.size() == 5 && data.endTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$'))) &&
+        data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 240 &&
+        isValidId(data.createdBy) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidConfiguracion(data) {
+      return data.keys().hasAll(['id', 'name', 'tagline', 'address', 'city', 'phone', 'email', 'timezone', 'slotIntervalMinutes', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'tagline', 'address', 'city', 'phone', 'email', 'whatsapp', 'instagram', 'timezone', 'slotIntervalMinutes', 'adminNotificationEmail', 'updatedByAdmin', 'updatedAt']) &&
+        data.id == 'main' &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
+        data.tagline is string && data.tagline.size() >= 2 && data.tagline.size() <= 200 &&
+        data.address is string && data.address.size() >= 4 && data.address.size() <= 200 &&
+        data.city is string && data.city.size() >= 2 && data.city.size() <= 80 &&
+        data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 25 &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+        (!('whatsapp' in data) || (data.whatsapp is string && data.whatsapp.size() <= 25)) &&
+        (!('instagram' in data) || (data.instagram is string && data.instagram.size() <= 120)) &&
+        (!('adminNotificationEmail' in data) || (data.adminNotificationEmail is string && data.adminNotificationEmail.size() <= 160)) &&
+        (!('updatedByAdmin' in data) || data.updatedByAdmin is bool) &&
+        data.timezone == 'America/Bogota' &&
+        data.slotIntervalMinutes is number && data.slotIntervalMinutes in [10, 15, 30] &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- 1. Colección usuarios (RBAC y PII privada) ---
+    match /usuarios/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(userId) && isAdmin() && isValidUsuario(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isValidUsuario(incoming()) && isAdmin() &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'barberId', 'active', 'phone', 'updatedAt']);
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // --- 2. Colección barberos (Catálogo público sin PII) ---
+    match /barberos/{barberId} {
+      allow get: if isValidId(barberId) && (existing().active == true || isAdmin());
+      allow list: if existing().active == true || isBootstrappedAdmin();
+      allow create: if isValidId(barberId) && isAdmin() && isValidBarbero(incoming()) &&
+        incoming().id == barberId &&
+        exists(/databases/$(database)/documents/usuarios/$(incoming().userId)) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(barberId) && isValidBarbero(incoming()) && isAdmin() &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'specialty', 'bio', 'photoUrl', 'active', 'updatedAt']);
+      allow delete: if isValidId(barberId) && isAdmin();
+    }
+
+    // --- 3. Colección clientes (PII estrictamente privada) ---
+    match /clientes/{clientId} {
+      allow get: if isValidId(clientId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(clientId) && isAdmin() && isValidCliente(incoming()) &&
+        incoming().id == clientId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(clientId) && isValidCliente(incoming()) && isAdmin() &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'email', 'totalAppointments', 'lastAppointmentAt', 'updatedAt']);
+      allow delete: if isValidId(clientId) && isAdmin();
+    }
+
+    // --- 4. Colección servicios (Catálogo público) ---
+    match /servicios/{serviceId} {
+      allow get: if isValidId(serviceId) && (existing().active == true || isAdmin());
+      allow list: if existing().active == true || isBootstrappedAdmin();
+      allow create: if isValidId(serviceId) && isAdmin() && isValidServicio(incoming()) &&
+        incoming().id == serviceId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(serviceId) && isValidServicio(incoming()) && isAdmin() &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'priceCop', 'durationMinutes', 'active', 'order', 'updatedAt']);
+      allow delete: if isValidId(serviceId) && isAdmin();
+    }
+
+    // --- 5. Colección citas (Contiene PII del cliente) ---
+    match /citas/{appointmentId} {
+      allow get: if isValidId(appointmentId) && (isAdmin() || (isBarber() && existing().barberUid == request.auth.uid));
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().barberUid == request.auth.uid);
+      allow create: if isValidId(appointmentId) && isAdmin() && isValidCita(incoming()) &&
+        incoming().id == appointmentId &&
+        exists(/databases/$(database)/documents/barberos/$(incoming().barberId)) &&
+        exists(/databases/$(database)/documents/servicios/$(incoming().serviceId)) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(appointmentId) && isValidCita(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isBarber() &&
+            existing().barberUid == request.auth.uid &&
+            existing().status != 'finalizada' &&
+            existing().status != 'cancelada' &&
+            existing().status != 'no_asistio' &&
+            incoming().barberId == existing().barberId &&
+            incoming().barberUid == existing().barberUid &&
+            incoming().clientId == existing().clientId &&
+            incoming().serviceId == existing().serviceId &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(appointmentId) && isAdmin();
+    }
+
+    // --- 6. Colección horarios ---
+    match /horarios/{scheduleId} {
+      allow get: if isValidId(scheduleId) && (existing().isPublic == true || isAdmin() || isBarber());
+      allow list: if existing().isPublic == true || isBootstrappedAdmin();
+      allow create: if isValidId(scheduleId) && isValidHorario(incoming()) &&
+        incoming().id == scheduleId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isBarber() &&
+            scheduleId == get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.barberId &&
+            incoming().barberId == scheduleId &&
+            incoming().isPublic == false
+          )
+        );
+      allow update: if isValidId(scheduleId) && isValidHorario(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['barberId', 'isPublic', 'days', 'updatedAt'])) ||
+          (
+            isBarber() &&
+            scheduleId == get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.barberId &&
+            existing().barberId == scheduleId &&
+            incoming().barberId == existing().barberId &&
+            incoming().isPublic == existing().isPublic &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['days', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(scheduleId) && isAdmin();
+    }
+
+    // --- 7. Colección bloqueos ---
+    match /bloqueos/{blockId} {
+      allow get: if isValidId(blockId) && (isAdmin() || isBarber());
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().barberUid == request.auth.uid || existing().barberId == 'all');
+      allow create: if isValidId(blockId) && isValidBloqueo(incoming()) &&
+        incoming().id == blockId &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time && (
+          isAdmin() ||
+          (
+            isBarber() &&
+            incoming().barberId != 'all' &&
+            incoming().barberId == get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.barberId &&
+            incoming().barberUid == request.auth.uid
+          )
+        );
+      allow update: if isValidId(blockId) && isValidBloqueo(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['barberId', 'barberUid', 'date', 'allDay', 'startTime', 'endTime', 'reason'])) ||
+          (
+            isBarber() &&
+            existing().barberUid == request.auth.uid &&
+            existing().barberId == get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.barberId &&
+            incoming().barberId == existing().barberId &&
+            incoming().barberUid == existing().barberUid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['date', 'allDay', 'startTime', 'endTime', 'reason'])
+          )
+        );
+      allow delete: if isValidId(blockId) && (
+        isAdmin() ||
+        (isBarber() && existing().barberUid == request.auth.uid)
+      );
+    }
+
+    // --- 8. Colección ocupacion (Solo escritura transaccional en servidor Admin SDK) ---
+    match /ocupacion/{slotKey} {
+      allow get: if isValidId(slotKey) && (isAdmin() || isBarber());
+      allow list: if isBootstrappedAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // --- 9. Colección configuracion ---
+    match /configuracion/{configId} {
+      allow get: if isValidId(configId) && configId == 'main';
+      allow list: if false;
+      allow create: if isValidId(configId) && configId == 'main' && isAdmin() && isValidConfiguracion(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(configId) && configId == 'main' && isAdmin() && isValidConfiguracion(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tagline', 'address', 'city', 'phone', 'email', 'whatsapp', 'instagram', 'timezone', 'slotIntervalMinutes', 'adminNotificationEmail', 'updatedByAdmin', 'updatedAt']);
+      allow delete: if false;
+    }
+  }
+}

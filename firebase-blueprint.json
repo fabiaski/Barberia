@@ -1,0 +1,548 @@
+{
+  "entities": {
+    "Usuario": {
+      "title": "Usuario del sistema",
+      "description": "Cuenta interna autenticada con rol de administrador o barbero.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "barbero"]
+        },
+        "barberId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "role", "active", "createdAt", "updatedAt"]
+    },
+    "Barbero": {
+      "title": "Barbero",
+      "description": "Perfil público de un barbero disponible para reservas.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "specialty": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "name", "specialty", "active", "createdAt", "updatedAt"]
+    },
+    "Cliente": {
+      "title": "Cliente",
+      "description": "Registro CRM privado de un cliente que ha realizado reservas.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 20
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "totalAppointments": {
+          "type": "number"
+        },
+        "lastAppointmentAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "fullName", "phone", "email", "totalAppointments", "createdAt", "updatedAt"]
+    },
+    "Servicio": {
+      "title": "Servicio",
+      "description": "Servicio ofrecido por la barbería con precio en COP y duración.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 400
+        },
+        "priceCop": {
+          "type": "number"
+        },
+        "durationMinutes": {
+          "type": "number"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "description", "priceCop", "durationMinutes", "active", "order", "createdAt", "updatedAt"]
+    },
+    "Cita": {
+      "title": "Cita",
+      "description": "Reserva agendada para un cliente con un barbero y servicio.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "clientPhone": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 20
+        },
+        "clientEmail": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "barberId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "barberUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "barberName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "serviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "priceCop": {
+          "type": "number"
+        },
+        "durationMinutes": {
+          "type": "number"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "startTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "maxLength": 5
+        },
+        "endTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "maxLength": 5
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmada", "en_proceso", "finalizada", "cancelada", "no_asistio"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "clientId",
+        "clientName",
+        "clientPhone",
+        "clientEmail",
+        "barberId",
+        "barberUid",
+        "barberName",
+        "serviceId",
+        "serviceName",
+        "priceCop",
+        "durationMinutes",
+        "date",
+        "startTime",
+        "endTime",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Horario": {
+      "title": "Horario laboral",
+      "description": "Configuración de días y horas de atención semanal.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "barberId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "days": {
+          "type": "array",
+          "description": "Lista de exactamente 7 objetos de horario diario (Domingo a Sábado)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "isPublic", "days", "updatedAt"]
+    },
+    "Bloqueo": {
+      "title": "Bloqueo de agenda",
+      "description": "Día de descanso o franja horaria bloqueada por el administrador.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "barberId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "barberUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "allDay": {
+          "type": "boolean"
+        },
+        "startTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "maxLength": 5
+        },
+        "endTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "maxLength": 5
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 240
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "barberId", "date", "allDay", "reason", "createdBy", "createdAt"]
+    },
+    "Ocupacion": {
+      "title": "Bloque de ocupación",
+      "description": "Candado atómico de 15 minutos por barbero y fecha para evitar reservas simultáneas.",
+      "type": "object",
+      "properties": {
+        "barberId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "slotTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+          "maxLength": 5
+        },
+        "appointmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["barberId", "date", "slotTime", "appointmentId", "createdAt"]
+    },
+    "Configuracion": {
+      "title": "Configuración general",
+      "description": "Parámetros públicos e institucionales de la barbería.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["main"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "tagline": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "address": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 200
+        },
+        "city": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 25
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "whatsapp": {
+          "type": "string",
+          "maxLength": 25
+        },
+        "instagram": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "timezone": {
+          "type": "string",
+          "enum": ["America/Bogota"]
+        },
+        "slotIntervalMinutes": {
+          "type": "number"
+        },
+        "adminNotificationEmail": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "updatedByAdmin": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "tagline",
+        "address",
+        "city",
+        "phone",
+        "email",
+        "timezone",
+        "slotIntervalMinutes",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/usuarios/{userId}": {
+      "schema": { "$ref": "#/entities/Usuario" },
+      "description": "Usuarios internos del sistema (administradores y barberos) y su rol RBAC."
+    },
+    "/barberos/{barberId}": {
+      "schema": { "$ref": "#/entities/Barbero" },
+      "description": "Catálogo público de barberos activos."
+    },
+    "/clientes/{clientId}": {
+      "schema": { "$ref": "#/entities/Cliente" },
+      "description": "Directorio privado de clientes (PII aislada)."
+    },
+    "/servicios/{serviceId}": {
+      "schema": { "$ref": "#/entities/Servicio" },
+      "description": "Servicios disponibles con precio COP y duración."
+    },
+    "/citas/{appointmentId}": {
+      "schema": { "$ref": "#/entities/Cita" },
+      "description": "Reservas agendadas vinculadas a cliente, barbero y servicio."
+    },
+    "/horarios/{scheduleId}": {
+      "schema": { "$ref": "#/entities/Horario" },
+      "description": "Horarios semanales de atención (general o por barbero)."
+    },
+    "/bloqueos/{blockId}": {
+      "schema": { "$ref": "#/entities/Bloqueo" },
+      "description": "Días de descanso y franjas bloqueadas."
+    },
+    "/ocupacion/{slotKey}": {
+      "schema": { "$ref": "#/entities/Ocupacion" },
+      "description": "Slots de 15 minutos ocupados para transacciones atómicas sin colisiones."
+    },
+    "/configuracion/{configId}": {
+      "schema": { "$ref": "#/entities/Configuracion" },
+      "description": "Configuración general de la barbería (documento 'main')."
+    }
+  }
+}
