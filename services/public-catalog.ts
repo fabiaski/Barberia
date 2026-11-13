@@ -343,14 +343,22 @@ export async function getPublicCatalog(): Promise<PublicCatalogData> {
 
     const [configDoc, scheduleDoc, servicesDocs, barbersDocs] =
       await Promise.all([
-        serverGetDoc('configuracion', 'main'),
-        serverGetDoc('horarios', 'general'),
+        serverGetDoc('configuracion', 'main').catch(() => ({
+          id: 'main',
+          exists: false,
+          data: undefined,
+        })),
+        serverGetDoc('horarios', 'general').catch(() => ({
+          id: 'general',
+          exists: false,
+          data: undefined,
+        })),
         serverQueryCollection('servicios', {
           filters: [{ field: 'active', op: '==', value: true }],
-        }),
+        }).catch(() => []),
         serverQueryCollection('barberos', {
           filters: [{ field: 'active', op: '==', value: true }],
-        }),
+        }).catch(() => []),
       ]);
 
     const configData = configDoc.data;
