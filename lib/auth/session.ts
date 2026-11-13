@@ -321,6 +321,18 @@ export async function getServerSession(): Promise<SessionUser | null> {
     if (!signedUser || !signedUser.active) {
       return null;
     }
+
+    const idToken = cookieStore.get('barberia_id_token')?.value;
+    if (!idToken) {
+      return null;
+    }
+
+    try {
+      await verifyFirebaseIdToken(idToken);
+    } catch {
+      return null;
+    }
+
     return signedUser;
   } catch {
     return null;

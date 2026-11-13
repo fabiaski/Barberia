@@ -61,10 +61,9 @@ function getAdminApp(): App {
 }
 
 export function hasAdminServiceAccount(): boolean {
-  return Boolean(
-    process.env.FIREBASE_ADMIN_CLIENT_EMAIL &&
-      process.env.FIREBASE_ADMIN_PRIVATE_KEY
-  );
+  const email = process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim() ?? '';
+  const key = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.trim() ?? '';
+  return Boolean(email && key.includes('PRIVATE KEY'));
 }
 
 export function getFirebaseProjectConfig() {
