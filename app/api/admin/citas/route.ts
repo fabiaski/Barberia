@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Timestamp } from 'firebase-admin/firestore';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import { hasAdminServiceAccount } from '@/lib/firebase-admin';
+import {
+  serverCommitWrites,
+  serverGetDoc,
+  serverQueryCollection,
+  type ServerBatchOperation,
+} from '@/lib/firestore-server';
 import { adminUpdateAppointmentStatusSchema } from '@/lib/validators/admin';
 import { getAdminAppointmentsAndReport } from '@/services/admin';
 import { AppointmentStatus, UserRole } from '@/types';
@@ -11,12 +16,15 @@ export async function GET(request: NextRequest) {
   if (!authResult.ok) return authResult.response;
 
   const { searchParams } = request.nextUrl;
-  const result = await getAdminAppointmentsAndReport({
-    dateFrom: searchParams.get('dateFrom') ?? undefined,
-    dateTo: searchParams.get('dateTo') ?? undefined,
-    barberId: searchParams.get('barberId') ?? undefined,
-    status: searchParams.get('status') ?? undefined,
-  });
+  const result = await getAdminAppointmentsAndReport(
+    {
+      dateFrom: searchParams.get('dateFrom') ?? undefined,
+      dateTo: searchParams.get('dateTo') ?? undefined,
+      barberId: searchParams.get('barberId') ?? undefined,
+      status: searchParams.get('status') ?? undefined,
+    },
+    authResult.idToken
+  );
 
   return NextResponse.json(result);
 }
@@ -37,9 +45,11 @@ export async function PATCH(request: NextRequest) {
     }
 
     const { appointmentId, status } = parsed.data;
-    const db = getAdminDb();
-    const apptRef = db.collection('citas').doc(appointmentId);
-    const apptSnap = await apptRef.get();
+    const apptSnap = await serverGetDoc(
+      'citas',
+      appointmentId,
+      authResult.idToken
+    );
 
     if (!apptSnap.exists) {
       return NextResponse.json(
@@ -48,27 +58,39 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const batch = db.batch();
-    batch.update(apptRef, {
-      status,
-      updatedAt: Timestamp.now(),
-    });
+    const ops: ServerBatchOperation[] = [
+      {
+        type: 'update',
+        collection: 'citas',
+        docId: appointmentId,
+        data: { status },
+        serverTimestampFields: ['updatedAt'],
+      },
+    ];
 
-    // Si se cancela o el cliente no asistió, liberar los bloqueos de ocupación asociados
+    // Si hay Service Account y se cancela o el cliente no asistió, liberar los bloqueos de ocupación
     if (
-      status === AppointmentStatus.CANCELLED ||
-      status === AppointmentStatus.NO_SHOW
+      hasAdminServiceAccount() &&
+      (status === AppointmentStatus.CANCELLED ||
+        status === AppointmentStatus.NO_SHOW)
     ) {
-      const occupancySnap = await db
-        .collection('ocupacion')
-        .where('appointmentId', '==', appointmentId)
-        .get();
-      for (const occDoc of occupancySnap.docs) {
-        batch.delete(occDoc.ref);
+      const occupancyDocs = await serverQueryCollection(
+        'ocupacion',
+        {
+          filters: [{ field: 'appointmentId', op: '==', value: appointmentId }],
+        },
+        authResult.idToken
+      );
+      for (const occDoc of occupancyDocs) {
+        ops.push({
+          type: 'delete',
+          collection: 'ocupacion',
+          docId: occDoc.id,
+        });
       }
     }
 
-    await batch.commit();
+    await serverCommitWrites(ops, authResult.idToken);
 
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',

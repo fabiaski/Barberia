@@ -1,7 +1,17 @@
 import 'server-only';
+import crypto from 'node:crypto';
 import { cookies } from 'next/headers';
-import { Timestamp } from 'firebase-admin/firestore';
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin';
+import {
+  getAdminAuth,
+  getFirebaseProjectConfig,
+  hasAdminServiceAccount,
+} from '@/lib/firebase-admin';
+import {
+  serverCommitWrites,
+  serverGetDoc,
+  serverQueryCollection,
+  serverSetDoc,
+} from '@/lib/firestore-server';
 import { UserRole } from '@/types';
 
 export const SESSION_COOKIE_NAME = 'barberia_session';
@@ -18,6 +28,67 @@ export interface SessionUser {
   emailVerified: boolean;
 }
 
+interface SignedSessionPayload {
+  user: SessionUser;
+  exp: number;
+}
+
+function getCookieHmacSecret(): string {
+  const { projectId, databaseId } = getFirebaseProjectConfig();
+  return (
+    process.env.SESSION_SECRET ||
+    process.env.GEMINI_API_KEY ||
+    `${projectId}:${databaseId}:barberia-estudio-session`
+  );
+}
+
+function signPayload(payload: SignedSessionPayload): string {
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString(
+    'base64url'
+  );
+  const sig = crypto
+    .createHmac('sha256', getCookieHmacSecret())
+    .update(encoded)
+    .digest('base64url');
+  return `v1.${encoded}.${sig}`;
+}
+
+function verifySignedPayload(token: string): SessionUser | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts[0] !== 'v1') return null;
+
+    const [, encoded, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', getCookieHmacSecret())
+      .update(encoded)
+      .digest('base64url');
+
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expectedSig);
+    if (
+      sigBuf.length !== expectedBuf.length ||
+      !crypto.timingSafeEqual(sigBuf, expectedBuf)
+    ) {
+      return null;
+    }
+
+    const parsed = JSON.parse(
+      Buffer.from(encoded, 'base64url').toString('utf8')
+    ) as SignedSessionPayload;
+
+    if (!parsed?.user || typeof parsed.exp !== 'number') {
+      return null;
+    }
+    if (Date.now() > parsed.exp) {
+      return null;
+    }
+    return parsed.user;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRole(value: unknown): UserRole | null {
   if (value === UserRole.ADMIN || value === 'admin') return UserRole.ADMIN;
   if (value === UserRole.BARBER || value === 'barbero') return UserRole.BARBER;
@@ -25,24 +96,52 @@ function normalizeRole(value: unknown): UserRole | null {
 }
 
 /**
+ * Verifica el Firebase ID Token recibido desde el cliente.
+ * Si hay Service Account configurada valida revocación; en vista previa verifica firma criptográfica sin ADC.
+ */
+export async function verifyFirebaseIdToken(idToken: string) {
+  const adminAuth = getAdminAuth();
+  const checkRevoked = hasAdminServiceAccount();
+  return adminAuth.verifyIdToken(idToken, checkRevoked);
+}
+
+/**
+ * Crea la cookie de sesión (Session Cookie nativa de Firebase Admin si hay Service Account,
+ * o cookie HttpOnly firmada con HMAC-SHA256 en modo vista previa).
+ */
+export async function createSessionCookieValue(
+  idToken: string,
+  user: SessionUser
+): Promise<string> {
+  if (hasAdminServiceAccount()) {
+    return getAdminAuth().createSessionCookie(idToken, {
+      expiresIn: SESSION_MAX_AGE_SECONDS * 1000,
+    });
+  }
+
+  return signPayload({
+    user,
+    exp: Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
+  });
+}
+
+/**
  * Sincroniza y resuelve el perfil RBAC del usuario autenticado desde `usuarios/{uid}` en Firestore.
- * Si corresponde al correo administrador inicial verificado, asegura su documento en `usuarios`.
- * Si el barbero fue pre-registrado por correo antes de crear su UID de Auth, vincula el registro.
  */
 export async function resolveAuthorizedUser(params: {
   uid: string;
   email?: string;
   displayName?: string;
   emailVerified?: boolean;
+  idToken?: string;
 }): Promise<SessionUser | null> {
-  const { uid, email, displayName, emailVerified = false } = params;
+  const { uid, email, displayName, emailVerified = false, idToken } = params;
   const normalizedEmail = email?.trim().toLowerCase() ?? '';
-  const db = getAdminDb();
-  const userRef = db.collection('usuarios').doc(uid);
-  const userSnap = await userRef.get();
 
-  if (userSnap.exists) {
-    const data = userSnap.data()!;
+  const userSnap = await serverGetDoc('usuarios', uid, idToken);
+
+  if (userSnap.exists && userSnap.data) {
+    const data = userSnap.data;
     const role = normalizeRole(data.role);
     const active = Boolean(data.active);
 
@@ -61,31 +160,39 @@ export async function resolveAuthorizedUser(params: {
     };
   }
 
-  // Bootstrap automático del administrador principal (verificado o primer registro único)
+  // Bootstrap automático del administrador principal
   if (normalizedEmail === ADMIN_BOOTSTRAP_EMAIL) {
     let allowBootstrap = emailVerified;
-    if (!allowBootstrap) {
-      const existingAdminSnap = await db
-        .collection('usuarios')
-        .where('role', '==', UserRole.ADMIN)
-        .where('active', '==', true)
-        .limit(1)
-        .get();
-      allowBootstrap = existingAdminSnap.empty;
+    if (!allowBootstrap && hasAdminServiceAccount()) {
+      const existingAdmins = await serverQueryCollection(
+        'usuarios',
+        {
+          filters: [
+            { field: 'role', op: '==', value: UserRole.ADMIN },
+            { field: 'active', op: '==', value: true },
+          ],
+          limit: 1,
+        },
+        idToken
+      );
+      allowBootstrap = existingAdmins.length === 0;
     }
 
     if (allowBootstrap) {
-      const now = Timestamp.now();
       const adminPayload = {
         uid,
         email: normalizedEmail,
         displayName: displayName?.trim() || 'Administrador',
         role: UserRole.ADMIN,
         active: true,
-        createdAt: now,
-        updatedAt: now,
       };
-      await userRef.set(adminPayload, { merge: true });
+      await serverSetDoc(
+        'usuarios',
+        uid,
+        adminPayload,
+        { merge: false, serverTimestampFields: ['createdAt', 'updatedAt'] },
+        idToken
+      );
 
       return {
         uid,
@@ -100,67 +207,84 @@ export async function resolveAuthorizedUser(params: {
 
   // Vincular registro previo por correo si fue creado antes del primer inicio de sesión
   if (normalizedEmail) {
-    const byEmailSnap = await db
-      .collection('usuarios')
-      .where('email', '==', normalizedEmail)
-      .limit(1)
-      .get();
+    try {
+      const byEmailDocs = await serverQueryCollection(
+        'usuarios',
+        {
+          filters: [{ field: 'email', op: '==', value: normalizedEmail }],
+          limit: 1,
+        },
+        idToken
+      );
 
-    if (!byEmailSnap.empty) {
-      const legacyDoc = byEmailSnap.docs[0];
-      const legacyData = legacyDoc.data();
-      const role = normalizeRole(legacyData.role);
-      const active = Boolean(legacyData.active);
+      if (byEmailDocs.length > 0 && byEmailDocs[0].data) {
+        const legacyDoc = byEmailDocs[0];
+        const legacyData = legacyDoc.data!;
+        const role = normalizeRole(legacyData.role);
+        const active = Boolean(legacyData.active);
 
-      if (role && active) {
-        const now = Timestamp.now();
-        const barberId = legacyData.barberId
-          ? String(legacyData.barberId)
-          : undefined;
-        const resolvedName = String(
-          legacyData.displayName ?? displayName ?? 'Equipo'
-        );
-
-        const batch = db.batch();
-        batch.set(userRef, {
-          uid,
-          email: normalizedEmail,
-          displayName: resolvedName,
-          role,
-          ...(barberId ? { barberId } : {}),
-          active: true,
-          createdAt: legacyData.createdAt ?? now,
-          updatedAt: now,
-        });
-
-        if (barberId) {
-          const barberRef = db.collection('barberos').doc(barberId);
-          batch.set(
-            barberRef,
-            {
-              userId: uid,
-              updatedAt: now,
-            },
-            { merge: true }
+        if (role && active) {
+          const barberId = legacyData.barberId
+            ? String(legacyData.barberId)
+            : undefined;
+          const resolvedName = String(
+            legacyData.displayName ?? displayName ?? 'Equipo'
           );
+
+          await serverCommitWrites(
+            [
+              {
+                type: 'set',
+                collection: 'usuarios',
+                docId: uid,
+                data: {
+                  uid,
+                  email: normalizedEmail,
+                  displayName: resolvedName,
+                  role,
+                  ...(barberId ? { barberId } : {}),
+                  active: true,
+                },
+                serverTimestampFields: ['createdAt', 'updatedAt'],
+              },
+              ...(barberId
+                ? [
+                    {
+                      type: 'set' as const,
+                      collection: 'barberos',
+                      docId: barberId,
+                      data: { userId: uid },
+                      merge: true,
+                      serverTimestampFields: ['updatedAt'],
+                    },
+                  ]
+                : []),
+              ...(legacyDoc.id !== uid
+                ? [
+                    {
+                      type: 'delete' as const,
+                      collection: 'usuarios',
+                      docId: legacyDoc.id,
+                    },
+                  ]
+                : []),
+            ],
+            idToken
+          );
+
+          return {
+            uid,
+            email: normalizedEmail,
+            displayName: resolvedName,
+            role,
+            barberId,
+            active: true,
+            emailVerified,
+          };
         }
-
-        if (legacyDoc.id !== uid) {
-          batch.delete(legacyDoc.ref);
-        }
-
-        await batch.commit();
-
-        return {
-          uid,
-          email: normalizedEmail,
-          displayName: resolvedName,
-          role,
-          barberId,
-          active: true,
-          emailVerified,
-        };
       }
+    } catch {
+      // Usuarios sin permiso list en `usuarios` simplemente continúan a null
     }
   }
 
@@ -178,17 +302,26 @@ export async function getServerSession(): Promise<SessionUser | null> {
       return null;
     }
 
-    const decoded = await getAdminAuth().verifySessionCookie(
-      sessionCookie,
-      true
-    );
+    if (hasAdminServiceAccount()) {
+      const decoded = await getAdminAuth().verifySessionCookie(
+        sessionCookie,
+        true
+      );
 
-    return await resolveAuthorizedUser({
-      uid: decoded.uid,
-      email: decoded.email,
-      displayName: typeof decoded.name === 'string' ? decoded.name : undefined,
-      emailVerified: Boolean(decoded.email_verified),
-    });
+      return await resolveAuthorizedUser({
+        uid: decoded.uid,
+        email: decoded.email,
+        displayName:
+          typeof decoded.name === 'string' ? decoded.name : undefined,
+        emailVerified: Boolean(decoded.email_verified),
+      });
+    }
+
+    const signedUser = verifySignedPayload(sessionCookie);
+    if (!signedUser || !signedUser.active) {
+      return null;
+    }
+    return signedUser;
   } catch {
     return null;
   }
@@ -204,13 +337,14 @@ export async function getSessionFromRequest(
     const token = authHeader.slice('Bearer '.length).trim();
     if (!token) return null;
     try {
-      const decoded = await getAdminAuth().verifyIdToken(token, true);
+      const decoded = await verifyFirebaseIdToken(token);
       return await resolveAuthorizedUser({
         uid: decoded.uid,
         email: decoded.email,
         displayName:
           typeof decoded.name === 'string' ? decoded.name : undefined,
         emailVerified: Boolean(decoded.email_verified),
+        idToken: token,
       });
     } catch {
       return null;

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Timestamp } from 'firebase-admin/firestore';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import {
+  generateFirestoreAutoId,
+  serverGetDoc,
+  serverSetDoc,
+} from '@/lib/firestore-server';
 import { createBlockSchema } from '@/lib/validators/admin';
 import { getAdminSchedulesAndBlocks } from '@/services/admin';
 import { UserRole } from '@/types';
@@ -10,7 +13,7 @@ export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const { blocks } = await getAdminSchedulesAndBlocks();
+  const { blocks } = await getAdminSchedulesAndBlocks(authResult.idToken);
   return NextResponse.json({ blocks });
 }
 
@@ -29,38 +32,45 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const db = getAdminDb();
     const { barberId, date, allDay, startTime, endTime, reason } = parsed.data;
 
     let barberUid: string | undefined;
     if (barberId !== 'all') {
-      const barberSnap = await db.collection('barberos').doc(barberId).get();
+      const barberSnap = await serverGetDoc(
+        'barberos',
+        barberId,
+        authResult.idToken
+      );
       if (!barberSnap.exists) {
         return NextResponse.json(
           { error: 'El barbero seleccionado no existe.' },
           { status: 404 }
         );
       }
-      barberUid = String(barberSnap.data()?.userId ?? '');
+      barberUid = String(barberSnap.data?.userId ?? '');
     }
 
-    const blockRef = db.collection('bloqueos').doc();
-    const now = Timestamp.now();
+    const blockId = generateFirestoreAutoId();
 
-    await blockRef.set({
-      id: blockRef.id,
-      barberId,
-      ...(barberUid ? { barberUid } : {}),
-      date,
-      allDay,
-      ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
-      reason,
-      createdBy: authResult.user.uid,
-      createdAt: now,
-    });
+    await serverSetDoc(
+      'bloqueos',
+      blockId,
+      {
+        id: blockId,
+        barberId,
+        ...(barberUid ? { barberUid } : {}),
+        date,
+        allDay,
+        ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
+        reason,
+        createdBy: authResult.user.uid,
+      },
+      { serverTimestampFields: ['createdAt'] },
+      authResult.idToken
+    );
 
     return NextResponse.json(
-      { message: 'Bloqueo de agenda creado correctamente.', id: blockRef.id },
+      { message: 'Bloqueo de agenda creado correctamente.', id: blockId },
       { status: 201 }
     );
   } catch (error) {

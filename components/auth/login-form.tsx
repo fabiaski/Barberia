@@ -5,14 +5,21 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import {
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import {
   AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   Eye,
   EyeOff,
   Loader2,
   Lock,
+  MailCheck,
   Scissors,
 } from 'lucide-react';
 import { auth } from '@/lib/firebase-client';
@@ -25,6 +32,13 @@ import { UserRole } from '@/types';
 
 interface LoginFormProps {
   nextPath?: string;
+}
+
+class EmailVerificationPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmailVerificationPendingError';
+  }
 }
 
 function mapFirebaseAuthError(error: unknown): string {
@@ -55,6 +69,10 @@ export function LoginForm({ nextPath }: LoginFormProps) {
   const { refreshSession } = useFirebase();
   const [authError, setAuthError] = useState<string>('');
   const [showPassword, setShowPassword] = useState(false);
+  const [unverifiedUser, setUnverifiedUser] = useState<User | null>(null);
+  const [verificationNotice, setVerificationNotice] = useState<string>('');
+  const [sendingVerification, setSendingVerification] = useState(false);
+  const [recheckingVerification, setRecheckingVerification] = useState(false);
 
   const {
     register,
@@ -69,7 +87,10 @@ export function LoginForm({ nextPath }: LoginFormProps) {
     },
   });
 
-  const exchangeTokenAndRedirect = async (idToken: string) => {
+  const exchangeTokenAndRedirect = async (
+    idToken: string,
+    firebaseUser: User
+  ) => {
     const response = await fetch('/api/auth/session', {
       method: 'POST',
       headers: {
@@ -83,7 +104,16 @@ export function LoginForm({ nextPath }: LoginFormProps) {
       authenticated?: boolean;
       user?: { role: UserRole };
       error?: string;
+      code?: string;
     };
+
+    if (response.status === 403 && payload.code === 'EMAIL_NOT_VERIFIED') {
+      setUnverifiedUser(firebaseUser);
+      throw new EmailVerificationPendingError(
+        payload.error ||
+          'Tu correo electrónico aún no está verificado en Firebase.'
+      );
+    }
 
     if (!response.ok || !payload.authenticated || !payload.user) {
       await signOut(auth);
@@ -93,6 +123,7 @@ export function LoginForm({ nextPath }: LoginFormProps) {
       );
     }
 
+    setUnverifiedUser(null);
     await refreshSession();
 
     const defaultDestination =
@@ -110,6 +141,8 @@ export function LoginForm({ nextPath }: LoginFormProps) {
 
   const onEmailSubmit = async (data: EmailPasswordLoginInput) => {
     setAuthError('');
+    setVerificationNotice('');
+    setUnverifiedUser(null);
     try {
       const credential = await signInWithEmailAndPassword(
         auth,
@@ -117,9 +150,51 @@ export function LoginForm({ nextPath }: LoginFormProps) {
         data.password
       );
       const idToken = await credential.user.getIdToken(true);
-      await exchangeTokenAndRedirect(idToken);
+      await exchangeTokenAndRedirect(idToken, credential.user);
+    } catch (error) {
+      if (error instanceof EmailVerificationPendingError) {
+        setAuthError(error.message);
+      } else {
+        setAuthError(mapFirebaseAuthError(error));
+      }
+    }
+  };
+
+  const handleSendVerification = async () => {
+    if (!unverifiedUser) return;
+    setSendingVerification(true);
+    setAuthError('');
+    setVerificationNotice('');
+    try {
+      await sendEmailVerification(unverifiedUser);
+      setVerificationNotice(
+        `Enviamos un enlace de verificación a ${unverifiedUser.email}. Ábrelo desde tu bandeja (revisa Spam si no aparece) y luego presiona «Ya verifiqué mi correo».`
+      );
     } catch (error) {
       setAuthError(mapFirebaseAuthError(error));
+    } finally {
+      setSendingVerification(false);
+    }
+  };
+
+  const handleRecheckVerification = async () => {
+    if (!unverifiedUser) return;
+    setRecheckingVerification(true);
+    setAuthError('');
+    try {
+      await unverifiedUser.reload();
+      if (!unverifiedUser.emailVerified) {
+        setAuthError(
+          'Tu correo todavía figura sin verificar. Abre el enlace que llegó a tu correo y vuelve a presionar este botón.'
+        );
+        return;
+      }
+      const freshToken = await unverifiedUser.getIdToken(true);
+      await exchangeTokenAndRedirect(freshToken, unverifiedUser);
+    } catch (error) {
+      setAuthError(mapFirebaseAuthError(error));
+    } finally {
+      setRecheckingVerification(false);
     }
   };
 
@@ -171,6 +246,53 @@ export function LoginForm({ nextPath }: LoginFormProps) {
                 aria-hidden="true"
               />
               <span>{authError}</span>
+            </div>
+          )}
+
+          {verificationNotice && (
+            <div
+              role="status"
+              className="mt-4 flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-relaxed text-emerald-800"
+            >
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600"
+                aria-hidden="true"
+              />
+              <span>{verificationNotice}</span>
+            </div>
+          )}
+
+          {unverifiedUser && (
+            <div className="mt-4 space-y-2.5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-xs font-medium text-amber-900">
+                Cuenta pendiente de verificación: {unverifiedUser.email}
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={handleSendVerification}
+                  disabled={sendingVerification || recheckingVerification}
+                  className="inline-flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-lg bg-amber-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-800 disabled:opacity-60"
+                >
+                  {sendingVerification ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <MailCheck className="h-3.5 w-3.5" />
+                  )}
+                  <span>Enviar enlace de verificación</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRecheckVerification}
+                  disabled={sendingVerification || recheckingVerification}
+                  className="inline-flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-stone-800 transition-colors hover:bg-stone-50 disabled:opacity-60"
+                >
+                  {recheckingVerification && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  <span>Ya verifiqué mi correo</span>
+                </button>
+              </div>
             </div>
           )}
 

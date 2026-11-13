@@ -1,6 +1,12 @@
 import 'server-only';
 import { DEFAULT_SLOT_INTERVAL_MINUTES } from '@/lib/constants/config';
-import { getAdminDb } from '@/lib/firebase-admin';
+import { hasAdminServiceAccount } from '@/lib/firebase-admin';
+import {
+  FirestoreRestPermissionError,
+  serverGetDoc,
+  serverQueryCollection,
+  type ServerDocSnapshot,
+} from '@/lib/firestore-server';
 import {
   generateScheduleTimeSlots,
   getDayOfWeekBogota,
@@ -122,6 +128,40 @@ function intervalsOverlap(
   return startA < endB && endA > startB;
 }
 
+async function safePublicQuery(
+  fn: () => Promise<ServerDocSnapshot[]>
+): Promise<ServerDocSnapshot[]> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (
+      !hasAdminServiceAccount() &&
+      error instanceof FirestoreRestPermissionError &&
+      error.status === 403
+    ) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function safePublicDoc(
+  fn: () => Promise<ServerDocSnapshot>
+): Promise<ServerDocSnapshot | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (
+      !hasAdminServiceAccount() &&
+      error instanceof FirestoreRestPermissionError &&
+      error.status === 403
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
  * Consulta la disponibilidad real en Cloud Firestore para un barbero (o 'any') y fecha específicos.
  * Verifica horario de atención (8:00 AM - 8:00 PM de lunes a domingo, o ajuste particular del barbero),
@@ -143,20 +183,22 @@ export async function checkAvailability(
   const dayOfWeek = getDayOfWeekBogota(date);
   const todayBogota = getBogotaDateString(new Date());
 
-  const db = getAdminDb();
-
   // Resolver duración desde el servicio en Firestore o desde el parámetro explícito
   let durationMinutes = rawDuration ?? 30;
   if (serviceId) {
-    const serviceSnap = await db.collection('servicios').doc(serviceId).get();
-    if (!serviceSnap.exists) {
+    const serviceSnap = await safePublicDoc(() =>
+      serverGetDoc('servicios', serviceId)
+    );
+    if (serviceSnap?.exists && serviceSnap.data) {
+      if (!serviceSnap.data.active) {
+        throw new Error(
+          'El servicio seleccionado no está disponible actualmente.'
+        );
+      }
+      durationMinutes = Number(serviceSnap.data.durationMinutes);
+    } else if (hasAdminServiceAccount()) {
       throw new Error('El servicio seleccionado no existe.');
     }
-    const serviceData = serviceSnap.data();
-    if (!serviceData?.active) {
-      throw new Error('El servicio seleccionado no está disponible actualmente.');
-    }
-    durationMinutes = Number(serviceData.durationMinutes);
   }
 
   if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
@@ -164,12 +206,12 @@ export async function checkAvailability(
   }
 
   const [configSnap, generalScheduleSnap] = await Promise.all([
-    db.collection('configuracion').doc('main').get(),
-    db.collection('horarios').doc('general').get(),
+    safePublicDoc(() => serverGetDoc('configuracion', 'main')),
+    safePublicDoc(() => serverGetDoc('horarios', 'general')),
   ]);
 
   const slotIntervalMinutes = Number(
-    configSnap.data()?.slotIntervalMinutes ?? DEFAULT_SLOT_INTERVAL_MINUTES
+    configSnap?.data?.slotIntervalMinutes ?? DEFAULT_SLOT_INTERVAL_MINUTES
   );
 
   if (date < todayBogota) {
@@ -191,21 +233,46 @@ export async function checkAvailability(
     };
   }
 
-  const generalDays = Array.isArray(generalScheduleSnap.data()?.days)
-    ? (generalScheduleSnap.data()?.days as DaySchedule[])
+  const generalDays = Array.isArray(generalScheduleSnap?.data?.days)
+    ? (generalScheduleSnap?.data?.days as DaySchedule[])
     : DEFAULT_WEEK_SCHEDULE;
 
   // Determinar los barberos a evaluar ('any' evalúa todos los activos)
   let targetBarberIds: string[] = [];
   if (barberId === 'any') {
-    const activeBarbersSnap = await db
-      .collection('barberos')
-      .where('active', '==', true)
-      .get();
-    targetBarberIds = activeBarbersSnap.docs.map((doc) => doc.id);
+    const activeBarbersDocs = await safePublicQuery(() =>
+      serverQueryCollection('barberos', {
+        filters: [{ field: 'active', op: '==', value: true }],
+      })
+    );
+    targetBarberIds =
+      activeBarbersDocs.length > 0
+        ? activeBarbersDocs.map((doc) => doc.id)
+        : ['jose'];
   } else {
-    const barberSnap = await db.collection('barberos').doc(barberId).get();
-    if (!barberSnap.exists || !barberSnap.data()?.active) {
+    const barberSnap = await safePublicDoc(() =>
+      serverGetDoc('barberos', barberId)
+    );
+    if (barberSnap?.exists) {
+      if (!barberSnap.data?.active) {
+        return {
+          barberId,
+          date,
+          dayOfWeek,
+          isOpen: false,
+          durationMinutes,
+          slotIntervalMinutes,
+          openTime: null,
+          closeTime: null,
+          availableSlots: [],
+          morningSlots: [],
+          afternoonSlots: [],
+          slots: [],
+          busyIntervals: [],
+          reason: 'El barbero seleccionado no se encuentra activo.',
+        };
+      }
+    } else if (hasAdminServiceAccount()) {
       return {
         barberId,
         date,
@@ -246,17 +313,28 @@ export async function checkAvailability(
   }
 
   // Consultar citas existentes de la fecha y bloqueos aplicables
-  const [appointmentsSnap, blocksSnap, barberScheduleSnaps] = await Promise.all([
-    barberId === 'any'
-      ? db.collection('citas').where('date', '==', date).get()
-      : db
-          .collection('citas')
-          .where('barberId', '==', barberId)
-          .where('date', '==', date)
-          .get(),
-    db.collection('bloqueos').where('date', '==', date).get(),
+  const [appointmentsDocs, blocksDocs, barberScheduleSnaps] = await Promise.all([
+    safePublicQuery(() =>
+      barberId === 'any'
+        ? serverQueryCollection('citas', {
+            filters: [{ field: 'date', op: '==', value: date }],
+          })
+        : serverQueryCollection('citas', {
+            filters: [
+              { field: 'barberId', op: '==', value: barberId },
+              { field: 'date', op: '==', value: date },
+            ],
+          })
+    ),
+    safePublicQuery(() =>
+      serverQueryCollection('bloqueos', {
+        filters: [{ field: 'date', op: '==', value: date }],
+      })
+    ),
     Promise.all(
-      targetBarberIds.map((id) => db.collection('horarios').doc(id).get())
+      targetBarberIds.map((id) =>
+        safePublicDoc(() => serverGetDoc('horarios', id))
+      )
     ),
   ]);
 
@@ -266,8 +344,8 @@ export async function checkAvailability(
   }
 
   // Registrar citas activas como intervalos ocupados
-  for (const doc of appointmentsSnap.docs) {
-    const data = doc.data();
+  for (const doc of appointmentsDocs) {
+    const data = doc.data ?? {};
     const status = String(data.status ?? '');
     if (NON_BLOCKING_STATUSES.has(status)) {
       continue;
@@ -291,8 +369,8 @@ export async function checkAvailability(
   }
 
   // Registrar bloqueos manuales (globales o del barbero)
-  for (const doc of blocksSnap.docs) {
-    const data = doc.data();
+  for (const doc of blocksDocs) {
+    const data = doc.data ?? {};
     const blockBarberId = String(data.barberId ?? '');
     const allDay = Boolean(data.allDay);
     const blockStart = allDay ? DEFAULT_OPEN_TIME : String(data.startTime ?? '');
@@ -328,7 +406,7 @@ export async function checkAvailability(
   targetBarberIds.forEach((id, index) => {
     const barberScheduleDoc = barberScheduleSnaps[index];
     const barberDays = barberScheduleDoc?.exists
-      ? (barberScheduleDoc.data()?.days as DaySchedule[] | undefined)
+      ? (barberScheduleDoc.data?.days as DaySchedule[] | undefined)
       : undefined;
 
     const daySchedule = getEffectiveDaySchedule(

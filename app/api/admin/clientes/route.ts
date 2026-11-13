@@ -8,6 +8,6 @@ export async function GET(request: NextRequest) {
   if (!authResult.ok) return authResult.response;
 
   const q = request.nextUrl.searchParams.get('q') ?? undefined;
-  const clients = await listAdminClients(q);
+  const clients = await listAdminClients(q, authResult.idToken);
   return NextResponse.json({ clients });
 }

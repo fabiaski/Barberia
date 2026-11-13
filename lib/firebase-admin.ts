@@ -60,6 +60,29 @@ function getAdminApp(): App {
   });
 }
 
+export function hasAdminServiceAccount(): boolean {
+  return Boolean(
+    process.env.FIREBASE_ADMIN_CLIENT_EMAIL &&
+      process.env.FIREBASE_ADMIN_PRIVATE_KEY
+  );
+}
+
+export function getFirebaseProjectConfig() {
+  return {
+    projectId:
+      process.env.FIREBASE_ADMIN_PROJECT_ID ||
+      process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
+      firebaseAppletConfig.projectId,
+    apiKey:
+      process.env.NEXT_PUBLIC_FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
+    databaseId:
+      process.env.FIREBASE_FIRESTORE_DATABASE_ID ||
+      process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ||
+      firebaseAppletConfig.firestoreDatabaseId ||
+      '(default)',
+  };
+}
+
 export function getAdminAuth(): Auth {
   return getAuth(getAdminApp());
 }

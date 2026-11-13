@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import { serverDeleteDoc, serverGetDoc } from '@/lib/firestore-server';
 import { UserRole } from '@/types';
 
 interface RouteContext {
@@ -13,9 +13,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
   try {
     const { id } = await context.params;
-    const db = getAdminDb();
-    const ref = db.collection('bloqueos').doc(id);
-    const snap = await ref.get();
+    const snap = await serverGetDoc('bloqueos', id, authResult.idToken);
 
     if (!snap.exists) {
       return NextResponse.json(
@@ -24,7 +22,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       );
     }
 
-    await ref.delete();
+    await serverDeleteDoc('bloqueos', id, authResult.idToken);
     return NextResponse.json({ message: 'Bloqueo eliminado correctamente.' });
   } catch (error) {
     const message =

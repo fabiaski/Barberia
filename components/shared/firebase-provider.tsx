@@ -8,7 +8,12 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import {
+  onAuthStateChanged,
+  onIdTokenChanged,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { auth, testFirestoreConnection } from '@/lib/firebase-client';
 import type { UserRole } from '@/types';
 
@@ -117,15 +122,31 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
         setSessionLoading(false);
       });
 
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
       if (!active) return;
       setUser(firebaseUser);
       setAuthReady(true);
     });
 
+    const unsubscribeToken = onIdTokenChanged(auth, async (firebaseUser) => {
+      if (!active || !firebaseUser) return;
+      try {
+        const idToken = await firebaseUser.getIdToken();
+        await fetch('/api/auth/session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ idToken }),
+        });
+      } catch {
+        // Silencioso: solo aplica cuando hay sesión previa activa
+      }
+    });
+
     return () => {
       active = false;
-      unsubscribe();
+      unsubscribeAuth();
+      unsubscribeToken();
     };
   }, [refreshSession]);
 

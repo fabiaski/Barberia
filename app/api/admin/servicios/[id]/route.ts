@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Timestamp } from 'firebase-admin/firestore';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import {
+  serverDeleteDoc,
+  serverGetDoc,
+  serverQueryCollection,
+  serverUpdateDoc,
+} from '@/lib/firestore-server';
 import { serviceMutationSchema } from '@/lib/validators/admin';
 import { UserRole } from '@/types';
 
@@ -25,9 +29,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const db = getAdminDb();
-    const serviceRef = db.collection('servicios').doc(id);
-    const snap = await serviceRef.get();
+    const snap = await serverGetDoc('servicios', id, authResult.idToken);
 
     if (!snap.exists) {
       return NextResponse.json(
@@ -36,10 +38,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    await serviceRef.update({
-      ...parsed.data,
-      updatedAt: Timestamp.now(),
-    });
+    await serverUpdateDoc(
+      'servicios',
+      id,
+      { ...parsed.data },
+      { serverTimestampFields: ['updatedAt'] },
+      authResult.idToken
+    );
 
     return NextResponse.json({
       message: 'Servicio actualizado correctamente.',
@@ -59,9 +64,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
   try {
     const { id } = await context.params;
-    const db = getAdminDb();
-    const serviceRef = db.collection('servicios').doc(id);
-    const snap = await serviceRef.get();
+    const snap = await serverGetDoc('servicios', id, authResult.idToken);
 
     if (!snap.exists) {
       return NextResponse.json(
@@ -70,14 +73,23 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const usedSnap = await db
-      .collection('citas')
-      .where('serviceId', '==', id)
-      .limit(1)
-      .get();
+    const usedDocs = await serverQueryCollection(
+      'citas',
+      {
+        filters: [{ field: 'serviceId', op: '==', value: id }],
+        limit: 1,
+      },
+      authResult.idToken
+    );
 
-    if (!usedSnap.empty) {
-      await serviceRef.update({ active: false, updatedAt: Timestamp.now() });
+    if (usedDocs.length > 0) {
+      await serverUpdateDoc(
+        'servicios',
+        id,
+        { active: false },
+        { serverTimestampFields: ['updatedAt'] },
+        authResult.idToken
+      );
       return NextResponse.json({
         deactivatedOnly: true,
         message:
@@ -85,7 +97,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       });
     }
 
-    await serviceRef.delete();
+    await serverDeleteDoc('servicios', id, authResult.idToken);
     return NextResponse.json({
       deactivatedOnly: false,
       message: 'Servicio eliminado correctamente.',

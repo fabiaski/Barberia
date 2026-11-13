@@ -1,45 +1,66 @@
 import { getServerSession } from '@/lib/auth/session';
-import { getAdminDb } from '@/lib/firebase-admin';
 import {
   APPOINTMENT_STATUS_LABELS,
   DAYS_OF_WEEK_ES,
 } from '@/lib/constants/config';
 import {
+  getServerIdToken,
+  serverGetDoc,
+  serverQueryCollection,
+} from '@/lib/firestore-server';
+import {
   formatCurrencyCOP,
   formatTime12h,
   getBogotaDateString,
 } from '@/lib/utils/timezone';
-import { AppointmentStatus, type DaySchedule } from '@/types';
+import { AppointmentStatus, UserRole, type DaySchedule } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
 export default async function BarberoPage() {
-  const session = await getServerSession();
-  const db = getAdminDb();
+  const [session, idToken] = await Promise.all([
+    getServerSession(),
+    getServerIdToken(),
+  ]);
   const todayBogota = getBogotaDateString(new Date());
 
   const targetBarberId = session?.barberId ?? 'jose';
+  const isBarberUser = session?.role === UserRole.BARBER && Boolean(session?.uid);
 
-  const [barberSnap, appointmentsSnap, barberScheduleSnap, generalScheduleSnap] =
+  const [barberSnap, appointmentsDocs, barberScheduleSnap, generalScheduleSnap] =
     await Promise.all([
-      db.collection('barberos').doc(targetBarberId).get(),
-      db
-        .collection('citas')
-        .where('barberId', '==', targetBarberId)
-        .where('date', '==', todayBogota)
-        .get(),
-      db.collection('horarios').doc(targetBarberId).get(),
-      db.collection('horarios').doc('general').get(),
+      serverGetDoc('barberos', targetBarberId, idToken),
+      serverQueryCollection(
+        'citas',
+        {
+          filters: isBarberUser
+            ? [
+                { field: 'barberUid', op: '==', value: session!.uid },
+                { field: 'date', op: '==', value: todayBogota },
+              ]
+            : [
+                { field: 'barberId', op: '==', value: targetBarberId },
+                { field: 'date', op: '==', value: todayBogota },
+              ],
+        },
+        idToken
+      ),
+      serverGetDoc('horarios', targetBarberId, idToken).catch(() => ({
+        id: targetBarberId,
+        exists: false,
+        data: undefined,
+      })),
+      serverGetDoc('horarios', 'general', idToken),
     ]);
 
-  const barberData = barberSnap.data();
+  const barberData = barberSnap.data;
   const barberName = String(
     barberData?.name ?? session?.displayName ?? 'Barbero'
   );
 
-  const todayAppointments = appointmentsSnap.docs
+  const todayAppointments = appointmentsDocs
     .map((doc) => {
-      const d = doc.data();
+      const d = doc.data ?? {};
       return {
         id: doc.id,
         clientName: String(d.clientName ?? ''),
@@ -48,14 +69,16 @@ export default async function BarberoPage() {
         startTime: String(d.startTime ?? ''),
         endTime: String(d.endTime ?? ''),
         priceCop: Number(d.priceCop ?? 0),
-        status: String(d.status ?? AppointmentStatus.CONFIRMED) as AppointmentStatus,
+        status: String(
+          d.status ?? AppointmentStatus.CONFIRMED
+        ) as AppointmentStatus,
       };
     })
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
 
   const scheduleSource = barberScheduleSnap.exists
-    ? barberScheduleSnap.data()
-    : generalScheduleSnap.data();
+    ? barberScheduleSnap.data
+    : generalScheduleSnap.data;
   const days = Array.isArray(scheduleSource?.days)
     ? (scheduleSource.days as DaySchedule[])
     : [];

@@ -1,6 +1,9 @@
 import 'server-only';
 import { Timestamp } from 'firebase-admin/firestore';
-import { getAdminDb } from '@/lib/firebase-admin';
+import {
+  serverGetDoc,
+  serverQueryCollection,
+} from '@/lib/firestore-server';
 import { getBogotaDateString } from '@/lib/utils/timezone';
 import {
   AppointmentStatus,
@@ -65,15 +68,15 @@ export function slugifyFirestoreId(raw: string): string {
 
 export async function generateUniqueDocId(
   collectionName: string,
-  baseText: string
+  baseText: string,
+  idToken?: string
 ): Promise<string> {
-  const db = getAdminDb();
   const baseId = slugifyFirestoreId(baseText);
   let candidate = baseId;
   let counter = 2;
 
   while (true) {
-    const snap = await db.collection(collectionName).doc(candidate).get();
+    const snap = await serverGetDoc(collectionName, candidate, idToken);
     if (!snap.exists) {
       return candidate;
     }
@@ -82,25 +85,30 @@ export async function generateUniqueDocId(
   }
 }
 
-export async function listAdminBarbers(): Promise<AdminBarberRecord[]> {
-  const db = getAdminDb();
-  const [barbersSnap, usersSnap] = await Promise.all([
-    db.collection('barberos').get(),
-    db.collection('usuarios').where('role', '==', 'barbero').get(),
+export async function listAdminBarbers(
+  idToken?: string
+): Promise<AdminBarberRecord[]> {
+  const [barbersDocs, usersDocs] = await Promise.all([
+    serverQueryCollection('barberos', {}, idToken),
+    serverQueryCollection(
+      'usuarios',
+      { filters: [{ field: 'role', op: '==', value: 'barbero' }] },
+      idToken
+    ),
   ]);
 
   const userByUid = new Map<string, { email: string; phone?: string }>();
-  for (const doc of usersSnap.docs) {
-    const d = doc.data();
+  for (const doc of usersDocs) {
+    const d = doc.data ?? {};
     userByUid.set(doc.id, {
       email: String(d.email ?? ''),
       phone: d.phone ? String(d.phone) : undefined,
     });
   }
 
-  return barbersSnap.docs
+  return barbersDocs
     .map((doc) => {
-      const d = doc.data();
+      const d = doc.data ?? {};
       const userId = String(d.userId ?? '');
       const linkedUser = userByUid.get(userId);
       return {
@@ -120,13 +128,12 @@ export async function listAdminBarbers(): Promise<AdminBarberRecord[]> {
     .sort((a, b) => a.name.localeCompare(b.name, 'es'));
 }
 
-export async function listAdminServices(): Promise<Service[]> {
-  const db = getAdminDb();
-  const snap = await db.collection('servicios').get();
+export async function listAdminServices(idToken?: string): Promise<Service[]> {
+  const docs = await serverQueryCollection('servicios', {}, idToken);
 
-  return snap.docs
+  return docs
     .map((doc) => {
-      const d = doc.data();
+      const d = doc.data ?? {};
       return {
         id: doc.id,
         name: String(d.name ?? ''),
@@ -142,14 +149,16 @@ export async function listAdminServices(): Promise<Service[]> {
     .sort((a, b) => a.order - b.order);
 }
 
-export async function listAdminClients(searchQuery?: string): Promise<Client[]> {
-  const db = getAdminDb();
-  const snap = await db.collection('clientes').get();
+export async function listAdminClients(
+  searchQuery?: string,
+  idToken?: string
+): Promise<Client[]> {
+  const docs = await serverQueryCollection('clientes', {}, idToken);
   const normalizedQuery = searchQuery?.trim().toLowerCase() ?? '';
 
-  return snap.docs
+  return docs
     .map((doc) => {
-      const d = doc.data();
+      const d = doc.data ?? {};
       return {
         id: doc.id,
         fullName: String(d.fullName ?? ''),
@@ -174,16 +183,15 @@ export async function listAdminClients(searchQuery?: string): Promise<Client[]> 
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export async function getAdminSchedulesAndBlocks(): Promise<{
+export async function getAdminSchedulesAndBlocks(idToken?: string): Promise<{
   generalSchedule: WorkSchedule;
   blocks: ScheduleBlock[];
   barbers: AdminBarberRecord[];
 }> {
-  const db = getAdminDb();
-  const [generalDoc, blocksSnap, barbers] = await Promise.all([
-    db.collection('horarios').doc('general').get(),
-    db.collection('bloqueos').get(),
-    listAdminBarbers(),
+  const [generalDoc, blocksDocs, barbers] = await Promise.all([
+    serverGetDoc('horarios', 'general', idToken),
+    serverQueryCollection('bloqueos', {}, idToken),
+    listAdminBarbers(idToken),
   ]);
 
   const defaultDays: DaySchedule[] = [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
@@ -193,7 +201,7 @@ export async function getAdminSchedulesAndBlocks(): Promise<{
     closeTime: '20:00',
   }));
 
-  const scheduleData = generalDoc.data();
+  const scheduleData = generalDoc.data;
   const generalSchedule: WorkSchedule = {
     id: 'general',
     isPublic: true,
@@ -203,9 +211,9 @@ export async function getAdminSchedulesAndBlocks(): Promise<{
     updatedAt: serializeTimestamp(scheduleData?.updatedAt),
   };
 
-  const blocks: ScheduleBlock[] = blocksSnap.docs
+  const blocks: ScheduleBlock[] = blocksDocs
     .map((doc) => {
-      const d = doc.data();
+      const d = doc.data ?? {};
       return {
         id: doc.id,
         barberId: String(d.barberId ?? 'all'),
@@ -228,10 +236,11 @@ export async function getAdminSchedulesAndBlocks(): Promise<{
   };
 }
 
-export async function getAdminShopConfig(): Promise<BarbershopConfig> {
-  const db = getAdminDb();
-  const doc = await db.collection('configuracion').doc('main').get();
-  const d = doc.data();
+export async function getAdminShopConfig(
+  idToken?: string
+): Promise<BarbershopConfig> {
+  const doc = await serverGetDoc('configuracion', 'main', idToken);
+  const d = doc.data;
 
   return {
     id: 'main',
@@ -256,22 +265,24 @@ export async function getAdminShopConfig(): Promise<BarbershopConfig> {
   };
 }
 
-export async function getAdminAppointmentsAndReport(filters?: {
-  dateFrom?: string;
-  dateTo?: string;
-  barberId?: string;
-  status?: string;
-}): Promise<{
+export async function getAdminAppointmentsAndReport(
+  filters?: {
+    dateFrom?: string;
+    dateTo?: string;
+    barberId?: string;
+    status?: string;
+  },
+  idToken?: string
+): Promise<{
   appointments: Appointment[];
   summary: AdminReportSummary;
   todayBogota: string;
 }> {
-  const db = getAdminDb();
   const todayBogota = getBogotaDateString(new Date());
-  const snap = await db.collection('citas').get();
+  const docs = await serverQueryCollection('citas', {}, idToken);
 
-  const allAppointments: Appointment[] = snap.docs.map((doc) => {
-    const d = doc.data();
+  const allAppointments: Appointment[] = docs.map((doc) => {
+    const d = doc.data ?? {};
     return {
       id: doc.id,
       clientId: String(d.clientId ?? ''),
@@ -299,10 +310,18 @@ export async function getAdminAppointmentsAndReport(filters?: {
     .filter((appt) => {
       if (filters?.dateFrom && appt.date < filters.dateFrom) return false;
       if (filters?.dateTo && appt.date > filters.dateTo) return false;
-      if (filters?.barberId && filters.barberId !== 'all' && appt.barberId !== filters.barberId) {
+      if (
+        filters?.barberId &&
+        filters.barberId !== 'all' &&
+        appt.barberId !== filters.barberId
+      ) {
         return false;
       }
-      if (filters?.status && filters.status !== 'all' && appt.status !== filters.status) {
+      if (
+        filters?.status &&
+        filters.status !== 'all' &&
+        appt.status !== filters.status
+      ) {
         return false;
       }
       return true;
@@ -321,11 +340,22 @@ export async function getAdminAppointmentsAndReport(filters?: {
 
   const barberAgg = new Map<
     string,
-    { barberId: string; barberName: string; total: number; completed: number; revenueCop: number }
+    {
+      barberId: string;
+      barberName: string;
+      total: number;
+      completed: number;
+      revenueCop: number;
+    }
   >();
   const serviceAgg = new Map<
     string,
-    { serviceId: string; serviceName: string; total: number; revenueCop: number }
+    {
+      serviceId: string;
+      serviceName: string;
+      total: number;
+      revenueCop: number;
+    }
   >();
 
   for (const appt of filtered) {
@@ -385,7 +415,9 @@ export async function getAdminAppointmentsAndReport(filters?: {
       completedRevenueCop,
       projectedRevenueCop,
       byBarber: Array.from(barberAgg.values()).sort((a, b) => b.total - a.total),
-      byService: Array.from(serviceAgg.values()).sort((a, b) => b.total - a.total),
+      byService: Array.from(serviceAgg.values()).sort(
+        (a, b) => b.total - a.total
+      ),
     },
   };
 }

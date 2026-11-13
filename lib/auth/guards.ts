@@ -6,6 +6,7 @@ import {
   getSessionFromRequest,
   type SessionUser,
 } from '@/lib/auth/session';
+import { getServerIdToken } from '@/lib/firestore-server';
 import { UserRole } from '@/types';
 
 export function getDefaultPanelPath(role: UserRole): string {
@@ -38,12 +39,11 @@ export async function requireApiRole(
   request: NextRequest,
   allowedRoles: UserRole[]
 ): Promise<
-  | { ok: true; user: SessionUser }
+  | { ok: true; user: SessionUser; idToken?: string }
   | { ok: false; response: NextResponse }
 > {
-  const user = await getSessionFromRequest(
-    request.headers.get('authorization')
-  );
+  const authHeader = request.headers.get('authorization');
+  const user = await getSessionFromRequest(authHeader);
 
   if (!user) {
     return {
@@ -65,5 +65,11 @@ export async function requireApiRole(
     };
   }
 
-  return { ok: true, user };
+  const headerToken =
+    authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : undefined;
+  const idToken = headerToken || (await getServerIdToken());
+
+  return { ok: true, user, idToken };
 }

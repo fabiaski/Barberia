@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Timestamp } from 'firebase-admin/firestore';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import { serverSetDoc } from '@/lib/firestore-server';
 import { serviceMutationSchema } from '@/lib/validators/admin';
 import { generateUniqueDocId, listAdminServices } from '@/services/admin';
 import { UserRole } from '@/types';
@@ -10,7 +9,7 @@ export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const services = await listAdminServices();
+  const services = await listAdminServices(authResult.idToken);
   return NextResponse.json({ services });
 }
 
@@ -28,16 +27,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const db = getAdminDb();
-    const serviceId = await generateUniqueDocId('servicios', parsed.data.name);
-    const now = Timestamp.now();
+    const serviceId = await generateUniqueDocId(
+      'servicios',
+      parsed.data.name,
+      authResult.idToken
+    );
 
-    await db.collection('servicios').doc(serviceId).set({
-      id: serviceId,
-      ...parsed.data,
-      createdAt: now,
-      updatedAt: now,
-    });
+    await serverSetDoc(
+      'servicios',
+      serviceId,
+      {
+        id: serviceId,
+        ...parsed.data,
+      },
+      { serverTimestampFields: ['createdAt', 'updatedAt'] },
+      authResult.idToken
+    );
 
     return NextResponse.json(
       { message: 'Servicio creado correctamente.', serviceId },

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Timestamp } from 'firebase-admin/firestore';
 import { requireApiRole } from '@/lib/auth/guards';
-import { getAdminDb } from '@/lib/firebase-admin';
+import {
+  serverCommitWrites,
+  serverGetDoc,
+  type ServerBatchOperation,
+} from '@/lib/firestore-server';
 import { updateScheduleSchema } from '@/lib/validators/admin';
 import { getAdminSchedulesAndBlocks } from '@/services/admin';
 import { UserRole } from '@/types';
@@ -10,7 +13,7 @@ export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const data = await getAdminSchedulesAndBlocks();
+  const data = await getAdminSchedulesAndBlocks(authResult.idToken);
   return NextResponse.json(data);
 }
 
@@ -30,8 +33,6 @@ export async function PUT(request: NextRequest) {
     }
 
     const { scheduleId, days } = parsed.data;
-    const db = getAdminDb();
-    const now = Timestamp.now();
 
     const sanitizedDays = days.map((day) => ({
       dayOfWeek: day.dayOfWeek,
@@ -43,27 +44,39 @@ export async function PUT(request: NextRequest) {
         : {}),
     }));
 
-    const batch = db.batch();
-    batch.set(db.collection('horarios').doc(scheduleId), {
-      id: scheduleId,
-      ...(scheduleId !== 'general' ? { barberId: scheduleId } : {}),
-      isPublic: scheduleId === 'general',
-      days: sanitizedDays,
-      updatedAt: now,
-    });
+    const ops: ServerBatchOperation[] = [
+      {
+        type: 'set',
+        collection: 'horarios',
+        docId: scheduleId,
+        data: {
+          id: scheduleId,
+          ...(scheduleId !== 'general' ? { barberId: scheduleId } : {}),
+          isPublic: scheduleId === 'general',
+          days: sanitizedDays,
+        },
+        serverTimestampFields: ['updatedAt'],
+      },
+    ];
 
     if (scheduleId === 'general') {
-      batch.set(
-        db.collection('configuracion').doc('main'),
-        {
-          updatedByAdmin: true,
-          updatedAt: now,
-        },
-        { merge: true }
+      const configSnap = await serverGetDoc(
+        'configuracion',
+        'main',
+        authResult.idToken
       );
+      if (configSnap.exists) {
+        ops.push({
+          type: 'update',
+          collection: 'configuracion',
+          docId: 'main',
+          data: { updatedByAdmin: true },
+          serverTimestampFields: ['updatedAt'],
+        });
+      }
     }
 
-    await batch.commit();
+    await serverCommitWrites(ops, authResult.idToken);
 
     return NextResponse.json({
       message: 'Horario de atención guardado correctamente.',
