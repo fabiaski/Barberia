@@ -13,6 +13,7 @@ import {
   serverUpdateDoc,
 } from '@/lib/firestore-server';
 import { updateBarberSchema } from '@/lib/validators/admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { UserRole } from '@/types';
 
 interface RouteContext {
@@ -48,11 +49,14 @@ async function createAuthUserViaWebApi(params: {
     const rawMsg = signUpJson.error?.message ?? '';
     if (rawMsg === 'EMAIL_EXISTS') {
       throw new Error(
-        'Ese correo ya existe en Firebase Authentication; en modo vista previa sin Service Account no se puede sobreescribir la contraseña existente.'
+        'Ese correo ya existe en Firebase Authentication; sin credenciales de administrador del servidor no se puede sobrescribir su contraseña.'
       );
     }
     throw new Error(
-      rawMsg || 'No fue posible crear la cuenta en Firebase Authentication.'
+      translateErrorMessageEs(
+        rawMsg,
+        'No fue posible crear la cuenta de acceso del barbero.'
+      )
     );
   }
 
@@ -85,7 +89,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Datos inválidos para actualizar el barbero.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -252,10 +261,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       message: 'Datos del barbero actualizados correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible actualizar el barbero.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible actualizar el barbero.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
@@ -266,6 +275,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
   try {
     const { id } = await context.params;
+    const softOnly = request.nextUrl.searchParams.get('soft') === '1';
     const barberSnap = await serverGetDoc('barberos', id, authResult.idToken);
     if (!barberSnap.exists) {
       return NextResponse.json(
@@ -275,59 +285,62 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     }
 
     const userId = String(barberSnap.data?.userId ?? '');
-    const historyDocs = await serverQueryCollection(
-      'citas',
-      {
-        filters: [{ field: 'barberId', op: '==', value: id }],
-        limit: 1,
-      },
-      authResult.idToken
-    );
 
-    if (historyDocs.length > 0) {
-      const ops: Array<{
-        type: 'update';
-        collection: string;
-        docId: string;
-        data: Record<string, unknown>;
-        serverTimestampFields: string[];
-      }> = [
+    if (softOnly) {
+      const historyDocs = await serverQueryCollection(
+        'citas',
         {
-          type: 'update',
-          collection: 'barberos',
-          docId: id,
-          data: { active: false },
-          serverTimestampFields: ['updatedAt'],
+          filters: [{ field: 'barberId', op: '==', value: id }],
+          limit: 1,
         },
-      ];
-      if (userId) {
-        const userSnap = await serverGetDoc(
-          'usuarios',
-          userId,
-          authResult.idToken
-        );
-        if (userSnap.exists) {
-          ops.push({
+        authResult.idToken
+      );
+
+      if (historyDocs.length > 0) {
+        const ops: Array<{
+          type: 'update';
+          collection: string;
+          docId: string;
+          data: Record<string, unknown>;
+          serverTimestampFields: string[];
+        }> = [
+          {
             type: 'update',
-            collection: 'usuarios',
-            docId: userId,
+            collection: 'barberos',
+            docId: id,
             data: { active: false },
             serverTimestampFields: ['updatedAt'],
-          });
+          },
+        ];
+        if (userId) {
+          const userSnap = await serverGetDoc(
+            'usuarios',
+            userId,
+            authResult.idToken
+          );
+          if (userSnap.exists && userSnap.data?.role === UserRole.BARBER) {
+            ops.push({
+              type: 'update',
+              collection: 'usuarios',
+              docId: userId,
+              data: { active: false },
+              serverTimestampFields: ['updatedAt'],
+            });
+          }
+          if (hasAdminServiceAccount()) {
+            await getAdminAuth()
+              .updateUser(userId, { disabled: true })
+              .catch(() => {});
+          }
         }
-        if (hasAdminServiceAccount()) {
-          await getAdminAuth()
-            .updateUser(userId, { disabled: true })
-            .catch(() => {});
-        }
-      }
-      await serverCommitWrites(ops, authResult.idToken);
+        await serverCommitWrites(ops, authResult.idToken);
 
-      return NextResponse.json({
-        deactivatedOnly: true,
-        message:
-          'El barbero tiene citas registradas en el historial, por lo que fue desactivado.',
-      });
+        return NextResponse.json({
+          deactivatedOnly: true,
+          message:
+            'El barbero tiene citas registradas en el historial, por lo que fue desactivado.',
+        });
+      }
     }
 
     const deleteOps: Array<{
@@ -339,9 +352,16 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       { type: 'delete', collection: 'horarios', docId: id },
     ];
     if (userId) {
-      deleteOps.push({ type: 'delete', collection: 'usuarios', docId: userId });
-      if (hasAdminServiceAccount()) {
-        await getAdminAuth().deleteUser(userId).catch(() => {});
+      const userSnap = await serverGetDoc(
+        'usuarios',
+        userId,
+        authResult.idToken
+      ).catch(() => ({ exists: false, data: undefined }));
+      if (userSnap.exists && userSnap.data?.role === UserRole.BARBER) {
+        deleteOps.push({ type: 'delete', collection: 'usuarios', docId: userId });
+        if (hasAdminServiceAccount()) {
+          await getAdminAuth().deleteUser(userId).catch(() => {});
+        }
       }
     }
     await serverCommitWrites(deleteOps, authResult.idToken);
@@ -351,10 +371,10 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       message: 'Barbero eliminado correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible eliminar el barbero.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible eliminar el barbero.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

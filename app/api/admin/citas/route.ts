@@ -7,26 +7,41 @@ import {
   serverQueryCollection,
   type ServerBatchOperation,
 } from '@/lib/firestore-server';
+import { createBookingManageToken } from '@/lib/auth/manage-token';
 import { adminUpdateAppointmentStatusSchema } from '@/lib/validators/admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { getAdminAppointmentsAndReport } from '@/services/admin';
+import { sendBookingCancelledEmails } from '@/services/email';
 import { AppointmentStatus, UserRole } from '@/types';
 
 export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const { searchParams } = request.nextUrl;
-  const result = await getAdminAppointmentsAndReport(
-    {
-      dateFrom: searchParams.get('dateFrom') ?? undefined,
-      dateTo: searchParams.get('dateTo') ?? undefined,
-      barberId: searchParams.get('barberId') ?? undefined,
-      status: searchParams.get('status') ?? undefined,
-    },
-    authResult.idToken
-  );
+  try {
+    const { searchParams } = request.nextUrl;
+    const result = await getAdminAppointmentsAndReport(
+      {
+        dateFrom: searchParams.get('dateFrom') ?? undefined,
+        dateTo: searchParams.get('dateTo') ?? undefined,
+        barberId: searchParams.get('barberId') ?? undefined,
+        status: searchParams.get('status') ?? undefined,
+      },
+      authResult.idToken
+    );
 
-  return NextResponse.json(result);
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: translateErrorMessageEs(
+          error,
+          'No fue posible consultar las citas.'
+        ),
+      },
+      { status: 400 }
+    );
+  }
 }
 
 export async function PATCH(request: NextRequest) {
@@ -39,7 +54,12 @@ export async function PATCH(request: NextRequest) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Datos inválidos para actualizar la cita.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -118,14 +138,47 @@ export async function PATCH(request: NextRequest) {
 
     await serverCommitWrites(ops, authResult.idToken);
 
+    if (status === AppointmentStatus.CANCELLED && apptSnap.data) {
+      const apptData = apptSnap.data;
+      const clientEmail = String(apptData.clientEmail ?? '');
+      await sendBookingCancelledEmails({
+        summary: {
+          id: appointmentId,
+          bookingCode: String(
+            apptData.bookingCode ?? appointmentId.slice(0, 8).toUpperCase()
+          ),
+          serviceId: String(apptData.serviceId ?? ''),
+          serviceName: String(apptData.serviceName ?? ''),
+          priceCop: Number(apptData.priceCop ?? 0),
+          durationMinutes: Number(apptData.durationMinutes ?? 30),
+          barberId: String(apptData.barberId ?? ''),
+          barberName: String(apptData.barberName ?? ''),
+          date: String(apptData.date ?? ''),
+          startTime: String(apptData.startTime ?? ''),
+          endTime: String(apptData.endTime ?? ''),
+          status: AppointmentStatus.CANCELLED,
+          notes: apptData.notes ? String(apptData.notes) : undefined,
+          clientName: String(apptData.clientName ?? ''),
+          clientPhone: String(apptData.clientPhone ?? ''),
+          clientEmail,
+          canModify: false,
+          manageToken: createBookingManageToken(appointmentId, clientEmail),
+        },
+        cancelledBy: 'admin',
+        barberUid: String(apptData.barberUid ?? ''),
+        idToken: authResult.idToken,
+        requestOrigin: request.nextUrl.origin,
+      });
+    }
+
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible actualizar la cita.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible actualizar la cita.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

@@ -17,11 +17,11 @@ export function getBogotaDateString(date: Date = new Date()): string {
  * Obtiene la hora actual en formato HH:mm (24h) en la zona horaria America/Bogota.
  */
 export function getBogotaTimeString(date: Date = new Date()): string {
-  const formatter = new Intl.DateTimeFormat('es-CO', {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: SYSTEM_TIMEZONE,
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   });
   return formatter.format(date);
 }

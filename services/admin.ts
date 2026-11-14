@@ -153,25 +153,65 @@ export async function listAdminClients(
   searchQuery?: string,
   idToken?: string
 ): Promise<Client[]> {
-  const docs = await serverQueryCollection('clientes', {}, idToken);
+  const [docs, citaDocs] = await Promise.all([
+    serverQueryCollection('clientes', {}, idToken),
+    serverQueryCollection('citas', {}, idToken).catch(() => []),
+  ]);
   const normalizedQuery = searchQuery?.trim().toLowerCase() ?? '';
 
-  return docs
-    .map((doc) => {
-      const d = doc.data ?? {};
-      return {
-        id: doc.id,
-        fullName: String(d.fullName ?? ''),
-        phone: String(d.phone ?? ''),
-        email: String(d.email ?? ''),
-        totalAppointments: Number(d.totalAppointments ?? 0),
-        lastAppointmentAt: d.lastAppointmentAt
-          ? serializeTimestamp(d.lastAppointmentAt)
-          : undefined,
-        createdAt: serializeTimestamp(d.createdAt),
-        updatedAt: serializeTimestamp(d.updatedAt),
-      };
-    })
+  const clientMap = new Map<string, Client>();
+  for (const doc of docs) {
+    const d = doc.data ?? {};
+    const email = String(d.email ?? '').trim().toLowerCase();
+    const key = email || doc.id;
+    clientMap.set(key, {
+      id: doc.id,
+      fullName: String(d.fullName ?? ''),
+      phone: String(d.phone ?? ''),
+      email: String(d.email ?? ''),
+      totalAppointments: Number(d.totalAppointments ?? 0),
+      lastAppointmentAt: d.lastAppointmentAt
+        ? serializeTimestamp(d.lastAppointmentAt)
+        : undefined,
+      createdAt: serializeTimestamp(d.createdAt),
+      updatedAt: serializeTimestamp(d.updatedAt),
+    });
+  }
+
+  const apptCountsByEmail = new Map<string, number>();
+  for (const cDoc of citaDocs) {
+    const cd = cDoc.data ?? {};
+    const email = String(cd.clientEmail ?? '').trim().toLowerCase();
+    if (!email) continue;
+    apptCountsByEmail.set(email, (apptCountsByEmail.get(email) ?? 0) + 1);
+
+    const createdIso = serializeTimestamp(cd.createdAt);
+    const updatedIso = serializeTimestamp(cd.updatedAt);
+    const existing = clientMap.get(email);
+    if (!existing) {
+      clientMap.set(email, {
+        id: String(cd.clientId ?? cDoc.id),
+        fullName: String(cd.clientName ?? ''),
+        phone: String(cd.clientPhone ?? ''),
+        email,
+        totalAppointments: 1,
+        lastAppointmentAt: createdIso,
+        createdAt: createdIso,
+        updatedAt: updatedIso,
+      });
+    } else {
+      const totalCitas = apptCountsByEmail.get(email) ?? existing.totalAppointments;
+      if (totalCitas > existing.totalAppointments) {
+        existing.totalAppointments = totalCitas;
+      }
+      if (updatedIso > existing.updatedAt) {
+        existing.updatedAt = updatedIso;
+        existing.lastAppointmentAt = createdIso;
+      }
+    }
+  }
+
+  return Array.from(clientMap.values())
     .filter((client) => {
       if (!normalizedQuery) return true;
       return (

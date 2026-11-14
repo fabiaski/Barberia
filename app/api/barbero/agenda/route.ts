@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import {
   getBarberWorkspaceData,
   type BarberAgendaRange,
@@ -13,20 +14,32 @@ export async function GET(request: NextRequest) {
   ]);
   if (!authResult.ok) return authResult.response;
 
-  const { searchParams } = request.nextUrl;
-  const date = searchParams.get('date') ?? undefined;
-  const rawRange = searchParams.get('range');
-  const range: BarberAgendaRange =
-    rawRange === 'week' || rawRange === 'upcoming' ? rawRange : 'day';
-  const requestedBarberId = searchParams.get('barberId') ?? undefined;
+  try {
+    const { searchParams } = request.nextUrl;
+    const date = searchParams.get('date') ?? undefined;
+    const rawRange = searchParams.get('range');
+    const range: BarberAgendaRange =
+      rawRange === 'week' || rawRange === 'upcoming' ? rawRange : 'day';
+    const requestedBarberId = searchParams.get('barberId') ?? undefined;
 
-  const workspace = await getBarberWorkspaceData({
-    session: authResult.user,
-    requestedBarberId,
-    date,
-    range,
-    idToken: authResult.idToken,
-  });
+    const workspace = await getBarberWorkspaceData({
+      session: authResult.user,
+      requestedBarberId,
+      date,
+      range,
+      idToken: authResult.idToken,
+    });
 
-  return NextResponse.json(workspace);
+    return NextResponse.json(workspace);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: translateErrorMessageEs(
+          error,
+          'No fue posible cargar la agenda del barbero.'
+        ),
+      },
+      { status: 400 }
+    );
+  }
 }

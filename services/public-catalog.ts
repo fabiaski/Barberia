@@ -5,7 +5,6 @@ import {
   serverCommitWrites,
   serverGetDoc,
   serverQueryCollection,
-  serverSetDoc,
   type ServerBatchOperation,
 } from '@/lib/firestore-server';
 import {
@@ -87,22 +86,13 @@ const LEGACY_SEED_SERVICE_IDS = [
 ];
 
 const LEGACY_SEED_BARBER_IDS = [
+  { id: 'jose', userId: 'barber_jose' },
   { id: 'mateo-rojas', userId: 'barber_mateo_rojas' },
   { id: 'sebastian-pardo', userId: 'barber_sebastian_pardo' },
   { id: 'andres-gomez', userId: 'barber_andres_gomez' },
 ];
 
-const DEFAULT_BARBERS: Omit<Barber, 'createdAt' | 'updatedAt'>[] = [
-  {
-    id: 'jose',
-    userId: 'barber_jose',
-    name: 'José',
-    specialty: 'Corte para caballeros y niños · Barba clásica',
-    bio: 'Atención personalizada en corte de cabello para caballeros y niños, y perfilado clásico de barba.',
-    photoUrl: '/images/barber_mateo.jpg',
-    active: true,
-  },
-];
+const DEFAULT_BARBERS: Omit<Barber, 'createdAt' | 'updatedAt'>[] = [];
 
 function serializeTimestamp(value: unknown): string {
   if (value instanceof Timestamp) {
@@ -115,9 +105,9 @@ function serializeTimestamp(value: unknown): string {
 }
 
 /**
- * Inicializa el catálogo base en Cloud Firestore si aún no existe configuracion/main,
- * o actualiza los datos iniciales anteriores (servicios, horario 8am-8pm lunes a domingo y barbero José).
- * En modo vista previa sin Service Account solo escribe si se pasa un idToken de administrador.
+ * Inicializa el catálogo base en Cloud Firestore si aún no existe configuracion/main
+ * (configuración general, horario 8am-8pm lunes a domingo y servicios base).
+ * No crea barberos predeterminados: los barberos se agregan manualmente desde /admin/barberos.
  */
 export async function ensureInitialCatalogSeeded(
   idToken?: string
@@ -133,7 +123,7 @@ export async function ensureInitialCatalogSeeded(
       corteCabelloDoc,
       corteBarbaDoc,
       barbaDoc,
-      joseDoc,
+      seededJoseDoc,
       legacyBarberDoc,
       generalScheduleDoc,
     ] = await Promise.all([
@@ -162,34 +152,19 @@ export async function ensureInitialCatalogSeeded(
     const needsServiceMigration =
       !isAdminEdited &&
       (!corteCabelloDoc.exists || !corteBarbaDoc.exists || !barbaDoc.exists);
-    const needsBarberMigration =
-      !isAdminEdited && (!joseDoc.exists || legacyBarberDoc.exists);
+
+    const hasSeededJose =
+      seededJoseDoc.exists &&
+      String(seededJoseDoc.data?.userId ?? '') === 'barber_jose';
+    const needsLegacyBarberCleanup =
+      !isAdminEdited && (hasSeededJose || legacyBarberDoc.exists);
 
     if (
       !needsServiceMigration &&
-      !needsBarberMigration &&
+      !needsLegacyBarberCleanup &&
       !needsSundayOpenMigration
     ) {
       return;
-    }
-
-    if (needsBarberMigration) {
-      for (const barber of DEFAULT_BARBERS) {
-        await serverSetDoc(
-          'usuarios',
-          barber.userId,
-          {
-            uid: barber.userId,
-            email: `${barber.id}@barberiaestudio.co`,
-            displayName: barber.name,
-            role: 'barbero',
-            barberId: barber.id,
-            active: true,
-          },
-          { serverTimestampFields: ['createdAt', 'updatedAt'] },
-          idToken
-        );
-      }
     }
 
     const ops: ServerBatchOperation[] = [];
@@ -227,7 +202,7 @@ export async function ensureInitialCatalogSeeded(
       }
     }
 
-    if (needsBarberMigration) {
+    if (needsLegacyBarberCleanup) {
       for (const legacyBarber of LEGACY_SEED_BARBER_IDS) {
         ops.push({
           type: 'delete',
@@ -240,37 +215,10 @@ export async function ensureInitialCatalogSeeded(
           docId: legacyBarber.userId,
         });
       }
-      for (const barber of DEFAULT_BARBERS) {
-        ops.push({
-          type: 'set',
-          collection: 'barberos',
-          docId: barber.id,
-          data: barber,
-          serverTimestampFields: ['createdAt', 'updatedAt'],
-        });
-      }
     }
 
     await serverCommitWrites(ops, idToken);
     return;
-  }
-
-  // Crear usuarios de barberos antes de crear documentos en `barberos` (requisito `exists()` en rules)
-  for (const barber of DEFAULT_BARBERS) {
-    await serverSetDoc(
-      'usuarios',
-      barber.userId,
-      {
-        uid: barber.userId,
-        email: `${barber.id}@barberiaestudio.co`,
-        displayName: barber.name,
-        role: 'barbero',
-        barberId: barber.id,
-        active: true,
-      },
-      { serverTimestampFields: ['createdAt', 'updatedAt'] },
-      idToken
-    );
   }
 
   const initialOps: ServerBatchOperation[] = [
@@ -326,11 +274,7 @@ function getFallbackCatalog(): PublicCatalogData {
       createdAt: nowIso,
       updatedAt: nowIso,
     })),
-    barbers: DEFAULT_BARBERS.map((b) => ({
-      ...b,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    })),
+    barbers: [],
   };
 }
 
@@ -419,23 +363,20 @@ export async function getPublicCatalog(): Promise<PublicCatalogData> {
             .sort((a, b) => a.order - b.order)
         : getFallbackCatalog().services;
 
-    const barbers: Barber[] =
-      barbersDocs.length > 0
-        ? barbersDocs.map((doc) => {
-            const d = doc.data ?? {};
-            return {
-              id: doc.id,
-              userId: String(d.userId),
-              name: String(d.name),
-              specialty: String(d.specialty),
-              bio: d.bio ? String(d.bio) : undefined,
-              photoUrl: d.photoUrl ? String(d.photoUrl) : undefined,
-              active: Boolean(d.active),
-              createdAt: serializeTimestamp(d.createdAt),
-              updatedAt: serializeTimestamp(d.updatedAt),
-            };
-          })
-        : getFallbackCatalog().barbers;
+    const barbers: Barber[] = barbersDocs.map((doc) => {
+      const d = doc.data ?? {};
+      return {
+        id: doc.id,
+        userId: String(d.userId),
+        name: String(d.name),
+        specialty: String(d.specialty),
+        bio: d.bio ? String(d.bio) : undefined,
+        photoUrl: d.photoUrl ? String(d.photoUrl) : undefined,
+        active: Boolean(d.active),
+        createdAt: serializeTimestamp(d.createdAt),
+        updatedAt: serializeTimestamp(d.updatedAt),
+      };
+    });
 
     return {
       config,

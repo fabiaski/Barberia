@@ -35,7 +35,7 @@ export const DEVELOPMENT_STAGES = [
   { step: '05', title: 'Panel de administración', status: 'Completada' },
   { step: '06', title: 'Motor transaccional de reservas', status: 'Completada' },
   { step: '07', title: 'Panel privado del barbero', status: 'Completada' },
-  { step: '08', title: 'Notificaciones por correo (Resend)', status: 'Pendiente' },
-  { step: '09', title: 'Pruebas integrales y concurrencia', status: 'Pendiente' },
+  { step: '08', title: 'Notificaciones por correo (Resend)', status: 'Completada' },
+  { step: '09', title: 'Pruebas integrales y concurrencia', status: 'Completada' },
   { step: '10', title: 'Despliegue en Vercel y dominio', status: 'Pendiente' },
 ] as const;

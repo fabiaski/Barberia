@@ -9,6 +9,10 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
 import { formatCurrencyCOP } from '@/lib/utils/timezone';
 import type { Service } from '@/types';
 
@@ -36,8 +40,8 @@ export function ServicesManagerClient({
 
   const reloadServices = async () => {
     const res = await fetch('/api/admin/servicios', { credentials: 'include' });
-    const data = (await res.json()) as { services?: Service[] };
-    if (res.ok && data.services) {
+    const data = await parseJsonResponseSafe<{ services?: Service[] }>(res);
+    if (res.ok && data?.services) {
       setServices(data.services);
     }
   };
@@ -101,15 +105,22 @@ export function ServicesManagerClient({
         credentials: 'include',
         body: JSON.stringify(payload),
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) throw new Error(data.error || 'Error al guardar servicio.');
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al guardar el servicio.')
+        );
+      }
 
       setMessage(data.message || 'Servicio guardado correctamente.');
       await reloadServices();
       closeForm();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'No fue posible guardar el servicio.'
+        translateErrorMessageEs(err, 'No fue posible guardar el servicio.')
       );
     } finally {
       setSaving(false);
@@ -125,13 +136,20 @@ export function ServicesManagerClient({
         method: 'DELETE',
         credentials: 'include',
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) throw new Error(data.error || 'Error al eliminar.');
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al eliminar el servicio.')
+        );
+      }
       setMessage(data.message || 'Operación completada.');
       await reloadServices();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'No fue posible eliminar el servicio.'
+        translateErrorMessageEs(err, 'No fue posible eliminar el servicio.')
       );
     } finally {
       setSaving(false);

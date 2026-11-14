@@ -156,6 +156,8 @@ export const shopConfigMutationSchema = z.object({
 });
 
 export const adminUpdateAppointmentStatusSchema = z.object({
-  appointmentId: z.string().trim().min(1).max(128),
-  status: z.nativeEnum(AppointmentStatus),
+  appointmentId: z.string().trim().min(1, 'El identificador de la cita es obligatorio').max(128),
+  status: z.nativeEnum(AppointmentStatus, {
+    error: 'El estado de la cita no es válido.',
+  }),
 });

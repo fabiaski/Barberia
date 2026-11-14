@@ -10,6 +10,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import { DAYS_OF_WEEK_ES } from '@/lib/constants/config';
+import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
 import { formatTime12h } from '@/lib/utils/timezone';
 import type { AdminBarberRecord } from '@/services/admin';
 import type { DaySchedule, ScheduleBlock, WorkSchedule } from '@/types';
@@ -66,14 +70,21 @@ export function SchedulesBlocksClient({
           days,
         }),
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) throw new Error(data.error || 'Error al guardar horario.');
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al guardar el horario.')
+        );
+      }
       setMessage(
         data.message || 'Horario general actualizado correctamente.'
       );
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'No fue posible guardar el horario.'
+        translateErrorMessageEs(err, 'No fue posible guardar el horario.')
       );
     } finally {
       setSavingSchedule(false);
@@ -99,14 +110,23 @@ export function SchedulesBlocksClient({
           reason: blockReason,
         }),
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) throw new Error(data.error || 'Error al crear bloqueo.');
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al crear el bloqueo.')
+        );
+      }
 
       const listRes = await fetch('/api/admin/bloqueos', {
         credentials: 'include',
       });
-      const listData = (await listRes.json()) as { blocks?: ScheduleBlock[] };
-      if (listRes.ok && listData.blocks) {
+      const listData = await parseJsonResponseSafe<{
+        blocks?: ScheduleBlock[];
+      }>(listRes);
+      if (listRes.ok && listData?.blocks) {
         setBlocks(listData.blocks);
       }
 
@@ -115,7 +135,7 @@ export function SchedulesBlocksClient({
       setMessage(data.message || 'Bloqueo agregado.');
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'No fue posible crear el bloqueo.'
+        translateErrorMessageEs(err, 'No fue posible crear el bloqueo.')
       );
     } finally {
       setSavingBlock(false);
@@ -131,13 +151,20 @@ export function SchedulesBlocksClient({
         method: 'DELETE',
         credentials: 'include',
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) throw new Error(data.error || 'Error al eliminar bloqueo.');
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al eliminar el bloqueo.')
+        );
+      }
       setBlocks((prev) => prev.filter((b) => b.id !== blockId));
       setMessage(data.message || 'Bloqueo eliminado.');
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'No fue posible eliminar el bloqueo.'
+        translateErrorMessageEs(err, 'No fue posible eliminar el bloqueo.')
       );
     } finally {
       setSavingBlock(false);

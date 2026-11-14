@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerIdToken } from '@/lib/firestore-server';
 import { hasAdminServiceAccount } from '@/lib/firebase-admin';
 import { createBookingSchema } from '@/lib/validators/booking';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import {
   BookingConfigurationError,
   BookingConflictError,
   BookingValidationError,
   createAtomicBooking,
 } from '@/services/booking';
+import { sendBookingConfirmationEmails } from '@/services/email';
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,9 +19,10 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json(
         {
-          error:
-            parsed.error.issues[0]?.message ??
-            'Verifica los datos ingresados para confirmar tu cita.',
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Verifica los datos ingresados para confirmar tu cita.'
+          ),
         },
         { status: 400 }
       );
@@ -34,6 +37,13 @@ export async function POST(request: NextRequest) {
       idToken
     );
 
+    const emailNotification = await sendBookingConfirmationEmails({
+      summary,
+      barberUid: appointment.barberUid,
+      idToken,
+      requestOrigin: request.nextUrl.origin,
+    });
+
     return NextResponse.json(
       {
         message: '¡Tu cita ha sido confirmada!',
@@ -41,6 +51,7 @@ export async function POST(request: NextRequest) {
         bookingCode: summary.bookingCode,
         manageToken: summary.manageToken,
         summary,
+        emailNotification,
       },
       { status: 201 }
     );
@@ -64,10 +75,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible registrar tu reserva en este momento.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible registrar tu reserva en este momento.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

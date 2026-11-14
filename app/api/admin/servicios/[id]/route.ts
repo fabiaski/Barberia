@@ -7,6 +7,7 @@ import {
   serverUpdateDoc,
 } from '@/lib/firestore-server';
 import { serviceMutationSchema } from '@/lib/validators/admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { UserRole } from '@/types';
 
 interface RouteContext {
@@ -24,7 +25,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Datos inválidos para actualizar el servicio.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -50,10 +56,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       message: 'Servicio actualizado correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible actualizar el servicio.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible actualizar el servicio.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
@@ -103,10 +109,10 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       message: 'Servicio eliminado correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible eliminar el servicio.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible eliminar el servicio.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

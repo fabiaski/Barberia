@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { AlertCircle, RotateCcw } from 'lucide-react';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 
 export default function GlobalError({
   error,
@@ -14,6 +15,13 @@ export default function GlobalError({
     console.error('Error crítico en la aplicación:', error);
   }, [error]);
 
+  const friendlyError = error?.message
+    ? translateErrorMessageEs(
+        error,
+        'No fue posible conectar correctamente con los servicios de la aplicación.'
+      )
+    : '';
+
   return (
     <html lang="es">
       <body className="flex min-h-screen items-center justify-center bg-stone-950 px-6 py-16 text-stone-100">
@@ -25,17 +33,17 @@ export default function GlobalError({
             Error interno del servidor
           </h1>
           <p className="mt-2 text-sm text-stone-400">
-            No se pudo completar la carga de la página. Verifica las variables de
-            entorno de Firebase o recarga la vista.
+            No se pudo completar la carga de la página. Por favor intenta
+            nuevamente en unos segundos.
           </p>
-          {error?.message && (
-            <p className="mt-3 break-words rounded-lg border border-stone-800 bg-stone-950 px-3 py-2 font-mono text-xs text-stone-300">
-              {error.message}
+          {friendlyError && (
+            <p className="mt-3 break-words rounded-lg border border-stone-800 bg-stone-950 px-3 py-2 text-xs text-stone-300">
+              {friendlyError}
             </p>
           )}
           {error?.digest && (
             <p className="mt-2 font-mono text-[11px] text-stone-500">
-              Ref: {error.digest}
+              Código de referencia: {error.digest}
             </p>
           )}
           <div className="mt-6 flex flex-wrap justify-center gap-3">
@@ -47,12 +55,13 @@ export default function GlobalError({
               <RotateCcw className="h-4 w-4" aria-hidden="true" />
               <span>Reintentar</span>
             </button>
-            <a
-              href="/"
+            <button
+              type="button"
+              onClick={() => window.location.assign('/')}
               className="inline-flex min-h-[42px] items-center rounded-xl border border-stone-700 px-5 py-2 text-sm font-medium text-stone-200 transition-colors hover:border-stone-500 hover:text-white"
             >
               Ir al inicio
-            </a>
+            </button>
           </div>
         </div>
       </body>

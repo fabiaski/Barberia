@@ -6,6 +6,7 @@ import {
   getAdminDb,
   hasAdminServiceAccount,
 } from '@/lib/firebase-admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 
 export const ID_TOKEN_COOKIE_NAME = 'barberia_id_token';
 
@@ -216,24 +217,36 @@ function mapRestOp(op: ServerQueryFilter['op']): string {
 
 export class FirestoreRestPermissionError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function parseRestError(response: Response): Promise<Error> {
   const text = await response.text().catch(() => '');
-  let message = text || `Error de Firestore (${response.status})`;
+  let rawMessage = text || `Error de Firestore (${response.status})`;
+  let rawCode: string | undefined;
   try {
-    const parsed = JSON.parse(text) as { error?: { message?: string } };
+    const parsed = JSON.parse(text) as {
+      error?: { message?: string; status?: string };
+    };
+    if (parsed.error?.status) {
+      rawCode = parsed.error.status;
+    }
     if (parsed.error?.message) {
-      message = parsed.error.message;
+      rawMessage = parsed.error.message;
     }
   } catch {
     // conservar texto sin formato
   }
-  return new FirestoreRestPermissionError(response.status, message);
+  const localized = translateErrorMessageEs(
+    { code: rawCode, message: rawMessage },
+    'No fue posible completar la operación en la base de datos.'
+  );
+  return new FirestoreRestPermissionError(response.status, localized, rawCode);
 }
 
 function buildRestWriteOperation(op: ServerBatchOperation): Record<string, unknown> {

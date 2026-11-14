@@ -24,6 +24,10 @@ import {
 } from 'lucide-react';
 import { auth } from '@/lib/firebase-client';
 import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
+import {
   emailPasswordLoginSchema,
   type EmailPasswordLoginInput,
 } from '@/lib/validators/auth';
@@ -42,26 +46,10 @@ class EmailVerificationPendingError extends Error {
 }
 
 function mapFirebaseAuthError(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    const code = String((error as { code?: unknown }).code);
-    switch (code) {
-      case 'auth/invalid-credential':
-      case 'auth/user-not-found':
-      case 'auth/wrong-password':
-        return 'Correo o contraseña incorrectos.';
-      case 'auth/too-many-requests':
-        return 'Demasiados intentos fallidos. Espera unos minutos antes de volver a intentar.';
-      case 'auth/operation-not-allowed':
-        return 'El acceso con correo y contraseña aún no está habilitado en Firebase Authentication.';
-      case 'auth/user-disabled':
-        return 'Esta cuenta ha sido deshabilitada por el administrador.';
-      default:
-        return 'No fue posible iniciar sesión. Verifica tus credenciales e intenta de nuevo.';
-    }
-  }
-  return error instanceof Error
-    ? error.message
-    : 'Error inesperado al iniciar sesión.';
+  return translateErrorMessageEs(
+    error,
+    'No fue posible iniciar sesión. Verifica tus credenciales e intenta de nuevo.'
+  );
 }
 
 export function LoginForm({ nextPath }: LoginFormProps) {
@@ -100,26 +88,31 @@ export function LoginForm({ nextPath }: LoginFormProps) {
       body: JSON.stringify({ idToken }),
     });
 
-    const payload = (await response.json()) as {
-      authenticated?: boolean;
-      user?: { role: UserRole };
-      error?: string;
-      code?: string;
-    };
+    const payload =
+      (await parseJsonResponseSafe<{
+        authenticated?: boolean;
+        user?: { role: UserRole };
+        error?: string;
+        code?: string;
+      }>(response)) ?? {};
 
     if (response.status === 403 && payload.code === 'EMAIL_NOT_VERIFIED') {
       setUnverifiedUser(firebaseUser);
       throw new EmailVerificationPendingError(
-        payload.error ||
+        translateErrorMessageEs(
+          payload.error,
           'Tu correo electrónico aún no está verificado en Firebase.'
+        )
       );
     }
 
     if (!response.ok || !payload.authenticated || !payload.user) {
       await signOut(auth);
       throw new Error(
-        payload.error ||
+        translateErrorMessageEs(
+          payload.error,
           'Tu cuenta no está autorizada para acceder al sistema interno.'
+        )
       );
     }
 

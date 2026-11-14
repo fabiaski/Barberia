@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
 import { serverDeleteDoc, serverGetDoc } from '@/lib/firestore-server';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { UserRole } from '@/types';
 
 export async function DELETE(
@@ -47,10 +48,10 @@ export async function DELETE(
       message: 'Bloqueo personal eliminado correctamente.',
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible eliminar el bloqueo.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible eliminar el bloqueo.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

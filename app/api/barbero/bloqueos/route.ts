@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
 import { generateFirestoreAutoId, serverSetDoc } from '@/lib/firestore-server';
 import { barberCreateBlockSchema } from '@/lib/validators/barbero';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { resolveBarberForSession } from '@/services/barbero';
 import { UserRole } from '@/types';
 
@@ -18,7 +19,12 @@ export async function POST(request: NextRequest) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos del bloqueo inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Verifica los datos del bloqueo.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -72,10 +78,10 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible crear el bloqueo personal.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible crear el bloqueo personal.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

@@ -267,12 +267,21 @@ service cloud.firestore {
     match /citas/{appointmentId} {
       allow get: if isValidId(appointmentId) && (isAdmin() || (isBarber() && existing().barberUid == request.auth.uid));
       allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().barberUid == request.auth.uid);
-      allow create: if isValidId(appointmentId) && isAdmin() && isValidCita(incoming()) &&
+      allow create: if isValidId(appointmentId) && isValidCita(incoming()) &&
         incoming().id == appointmentId &&
         exists(/databases/$(database)/documents/barberos/$(incoming().barberId)) &&
         exists(/databases/$(database)/documents/servicios/$(incoming().serviceId)) &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            !exists(/databases/$(database)/documents/citas/$(appointmentId)) &&
+            incoming().status == 'confirmada' &&
+            incoming().startTime.matches('^([01]\\d|2[0-3]):[0-5][05]$') &&
+            get(/databases/$(database)/documents/barberos/$(incoming().barberId)).data.active == true &&
+            get(/databases/$(database)/documents/servicios/$(incoming().serviceId)).data.active == true &&
+            existsAfter(/databases/$(database)/documents/ocupacion/$(incoming().barberId + '_' + incoming().date + '_' + incoming().startTime.replace(':', '')))
+          )
+        );
       allow update: if isValidId(appointmentId) && isValidCita(incoming()) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
@@ -361,12 +370,23 @@ service cloud.firestore {
       );
     }
 
-    // --- 8. Colección ocupacion (Bloques de 5 min para reservas atómicas sin colisiones) ---
+    // --- 8. Colección ocupacion (Bloques de 5 min sin PII para reservas atómicas sin colisiones) ---
     match /ocupacion/{slotKey} {
-      allow get: if isValidId(slotKey) && (isAdmin() || isBarber());
-      allow list: if isBootstrappedAdmin();
-      allow create: if isValidId(slotKey) && isAdmin() && isValidOcupacion(incoming()) &&
-        incoming().createdAt == request.time;
+      allow get: if isValidId(slotKey) && existing().date is string && existing().date.size() == 10;
+      allow list: if resource.data.date is string && resource.data.date.size() == 10;
+      allow create: if isValidId(slotKey) && isValidOcupacion(incoming()) &&
+        incoming().createdAt == request.time &&
+        slotKey == incoming().barberId + '_' + incoming().date + '_' + incoming().slotTime.replace(':', '') && (
+          isAdmin() || (
+            !exists(/databases/$(database)/documents/ocupacion/$(slotKey)) &&
+            exists(/databases/$(database)/documents/barberos/$(incoming().barberId)) &&
+            get(/databases/$(database)/documents/barberos/$(incoming().barberId)).data.active == true &&
+            existsAfter(/databases/$(database)/documents/citas/$(incoming().appointmentId)) &&
+            getAfter(/databases/$(database)/documents/citas/$(incoming().appointmentId)).data.barberId == incoming().barberId &&
+            getAfter(/databases/$(database)/documents/citas/$(incoming().appointmentId)).data.date == incoming().date &&
+            getAfter(/databases/$(database)/documents/citas/$(incoming().appointmentId)).data.status == 'confirmada'
+          )
+        );
       allow update: if false;
       allow delete: if isValidId(slotKey) && (
         isAdmin() ||

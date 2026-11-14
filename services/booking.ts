@@ -416,10 +416,7 @@ export async function checkAvailability(
         filters: [{ field: 'active', op: '==', value: true }],
       })
     );
-    targetBarberIds =
-      activeBarbersDocs.length > 0
-        ? activeBarbersDocs.map((doc) => doc.id)
-        : ['jose'];
+    targetBarberIds = activeBarbersDocs.map((doc) => doc.id);
   } else {
     const barberSnap = await safePublicDoc(() =>
       serverGetDoc('barberos', barberId)
@@ -483,30 +480,45 @@ export async function checkAvailability(
     };
   }
 
-  const [appointmentsDocs, blocksDocs, barberScheduleSnaps] = await Promise.all([
-    safePublicQuery(() =>
-      barberId === 'any'
-        ? serverQueryCollection('citas', {
-            filters: [{ field: 'date', op: '==', value: date }],
-          })
-        : serverQueryCollection('citas', {
-            filters: [
-              { field: 'barberId', op: '==', value: barberId },
-              { field: 'date', op: '==', value: date },
-            ],
-          })
-    ),
-    safePublicQuery(() =>
-      serverQueryCollection('bloqueos', {
-        filters: [{ field: 'date', op: '==', value: date }],
-      })
-    ),
-    Promise.all(
-      targetBarberIds.map((id) =>
-        safePublicDoc(() => serverGetDoc('horarios', id))
-      )
-    ),
-  ]);
+  const [appointmentsDocs, occupancyDocs, blocksDocs, barberScheduleSnaps] =
+    await Promise.all([
+      safePublicQuery(() =>
+        barberId === 'any'
+          ? serverQueryCollection('citas', {
+              filters: [{ field: 'date', op: '==', value: date }],
+            })
+          : serverQueryCollection('citas', {
+              filters: [
+                { field: 'barberId', op: '==', value: barberId },
+                { field: 'date', op: '==', value: date },
+              ],
+            })
+      ),
+      !hasAdminServiceAccount()
+        ? safePublicQuery(() =>
+            barberId === 'any'
+              ? serverQueryCollection('ocupacion', {
+                  filters: [{ field: 'date', op: '==', value: date }],
+                })
+              : serverQueryCollection('ocupacion', {
+                  filters: [
+                    { field: 'barberId', op: '==', value: barberId },
+                    { field: 'date', op: '==', value: date },
+                  ],
+                })
+          )
+        : Promise.resolve([] as ServerDocSnapshot[]),
+      safePublicQuery(() =>
+        serverQueryCollection('bloqueos', {
+          filters: [{ field: 'date', op: '==', value: date }],
+        })
+      ),
+      Promise.all(
+        targetBarberIds.map((id) =>
+          safePublicDoc(() => serverGetDoc('horarios', id))
+        )
+      ),
+    ]);
 
   const busyByBarber = new Map<string, BusyInterval[]>();
   for (const id of targetBarberIds) {
@@ -535,6 +547,32 @@ export async function checkAvailability(
         barberId: apptBarberId,
         startTime,
         endTime,
+        source: 'cita',
+      });
+    }
+  }
+
+  // En vista previa sin credenciales Admin, `citas` no es legible públicamente;
+  // leemos los candados de `ocupacion` (sin PII) para respetar horarios ya reservados.
+  if (appointmentsDocs.length === 0 && occupancyDocs.length > 0) {
+    for (const occDoc of occupancyDocs) {
+      const data = occDoc.data ?? {};
+      if (
+        excludeAppointmentId &&
+        String(data.appointmentId ?? '') === excludeAppointmentId
+      ) {
+        continue;
+      }
+      const occBarberId = String(data.barberId ?? '');
+      if (!busyByBarber.has(occBarberId)) {
+        continue;
+      }
+      const slotTime = String(data.slotTime ?? '');
+      if (!/^\d{2}:\d{2}$/.test(slotTime)) continue;
+      busyByBarber.get(occBarberId)!.push({
+        barberId: occBarberId,
+        startTime: slotTime,
+        endTime: minutesToTime(timeToMinutes(slotTime) + OCCUPANCY_STEP_MINUTES),
         source: 'cita',
       });
     }
@@ -972,165 +1010,184 @@ export async function createAtomicBooking(
     };
   }
 
-  // Modo vista previa sin Service Account: requiere sesión autenticada de administrador
-  if (!idToken) {
-    throw new BookingConfigurationError(
-      'Faltan credenciales de servidor Firebase Admin (FIREBASE_ADMIN_CLIENT_EMAIL y FIREBASE_ADMIN_PRIVATE_KEY) para registrar reservas públicas sin iniciar sesión.'
-    );
-  }
-
-  const chosenBarberId = slotDetail.availableBarberIds[0];
-  const [serviceSnap, barberSnap, clientSnap] = await Promise.all([
-    serverGetDoc('servicios', input.serviceId, idToken),
-    serverGetDoc('barberos', chosenBarberId, idToken),
-    serverGetDoc('clientes', clientId, idToken),
-  ]);
-
+  // Ruta secundaria (sin Service Account): escritura atómica directa vía Firestore REST API
+  // con reglas estrictas de validación y candados de 5 minutos en `ocupacion`.
+  const serviceSnap = await serverGetDoc('servicios', input.serviceId, idToken);
   if (!serviceSnap.exists || !serviceSnap.data?.active) {
     throw new BookingValidationError(
       'El servicio seleccionado no está disponible.'
-    );
-  }
-  if (!barberSnap.exists || !barberSnap.data?.active) {
-    throw new BookingConflictError(
-      'El barbero seleccionado ya no está disponible.'
     );
   }
 
   const durationMinutes = Number(serviceSnap.data.durationMinutes);
   const priceCop = Number(serviceSnap.data.priceCop);
   const serviceName = String(serviceSnap.data.name);
-  const barberUid = String(barberSnap.data.userId ?? '');
-  const barberName = String(barberSnap.data.name ?? chosenBarberId);
   const endTime = minutesToTime(
     timeToMinutes(input.startTime) + durationMinutes
   );
 
-  const occupancySlots = buildOccupancySlotKeys(
-    chosenBarberId,
-    input.date,
-    input.startTime,
-    durationMinutes
-  );
+  const clientSnap = idToken
+    ? await serverGetDoc('clientes', clientId, idToken).catch(() => null)
+    : null;
 
-  const ops: ServerBatchOperation[] = occupancySlots.map((slot) => ({
-    type: 'set',
-    collection: 'ocupacion',
-    docId: slot.slotKey,
-    preconditionExists: false,
-    data: {
-      barberId: chosenBarberId,
-      date: input.date,
-      slotTime: slot.slotTime,
-      appointmentId,
-    },
-    serverTimestampFields: ['createdAt'],
-  }));
+  let bookedAppointment: Appointment | null = null;
+  let bookedSummary: PublicBookingSummary | null = null;
+  let lastConflict = false;
 
-  if (clientSnap.exists && clientSnap.data) {
-    const prevCount = Number(clientSnap.data.totalAppointments ?? 0);
-    ops.push({
-      type: 'update',
-      collection: 'clientes',
-      docId: clientId,
-      data: {
-        fullName: normalizedFullName,
-        phone: normalizedPhone,
-        email: normalizedEmail,
-        totalAppointments: prevCount + 1,
-      },
-      serverTimestampFields: ['lastAppointmentAt', 'updatedAt'],
-    });
-  } else {
-    ops.push({
+  for (const candidateBarberId of slotDetail.availableBarberIds) {
+    const barberSnap = await serverGetDoc('barberos', candidateBarberId, idToken);
+    if (!barberSnap.exists || !barberSnap.data?.active) {
+      continue;
+    }
+
+    const barberUid = String(barberSnap.data.userId ?? '');
+    const barberName = String(barberSnap.data.name ?? candidateBarberId);
+
+    const occupancySlots = buildOccupancySlotKeys(
+      candidateBarberId,
+      input.date,
+      input.startTime,
+      durationMinutes
+    );
+
+    const ops: ServerBatchOperation[] = occupancySlots.map((slot) => ({
       type: 'set',
-      collection: 'clientes',
-      docId: clientId,
+      collection: 'ocupacion',
+      docId: slot.slotKey,
       preconditionExists: false,
       data: {
-        id: clientId,
-        fullName: normalizedFullName,
-        phone: normalizedPhone,
-        email: normalizedEmail,
-        totalAppointments: 1,
+        barberId: candidateBarberId,
+        date: input.date,
+        slotTime: slot.slotTime,
+        appointmentId,
       },
-      serverTimestampFields: ['lastAppointmentAt', 'createdAt', 'updatedAt'],
+      serverTimestampFields: ['createdAt'],
+    }));
+
+    // Solo actualizar la colección CRM privada `clientes` cuando hay sesión admin/Service Account.
+    if (idToken && clientSnap) {
+      if (clientSnap.exists && clientSnap.data) {
+        const prevCount = Number(clientSnap.data.totalAppointments ?? 0);
+        ops.push({
+          type: 'update',
+          collection: 'clientes',
+          docId: clientId,
+          data: {
+            fullName: normalizedFullName,
+            phone: normalizedPhone,
+            email: normalizedEmail,
+            totalAppointments: prevCount + 1,
+          },
+          serverTimestampFields: ['lastAppointmentAt', 'updatedAt'],
+        });
+      } else {
+        ops.push({
+          type: 'set',
+          collection: 'clientes',
+          docId: clientId,
+          preconditionExists: false,
+          data: {
+            id: clientId,
+            fullName: normalizedFullName,
+            phone: normalizedPhone,
+            email: normalizedEmail,
+            totalAppointments: 1,
+          },
+          serverTimestampFields: ['lastAppointmentAt', 'createdAt', 'updatedAt'],
+        });
+      }
+    }
+
+    const citaPayload: Record<string, unknown> = {
+      id: appointmentId,
+      clientId,
+      clientName: normalizedFullName,
+      clientPhone: normalizedPhone,
+      clientEmail: normalizedEmail,
+      barberId: candidateBarberId,
+      barberUid,
+      barberName,
+      serviceId: input.serviceId,
+      serviceName,
+      priceCop,
+      durationMinutes,
+      date: input.date,
+      startTime: input.startTime,
+      endTime,
+      status: AppointmentStatus.CONFIRMED,
+      bookingCode,
+    };
+    if (trimmedNotes) {
+      citaPayload.notes = trimmedNotes;
+    }
+
+    ops.push({
+      type: 'set',
+      collection: 'citas',
+      docId: appointmentId,
+      preconditionExists: false,
+      data: citaPayload,
+      serverTimestampFields: ['createdAt', 'updatedAt'],
     });
+
+    try {
+      await serverCommitWrites(ops, idToken);
+      const nowIso = new Date().toISOString();
+      bookedAppointment = {
+        id: appointmentId,
+        clientId,
+        clientName: normalizedFullName,
+        clientPhone: normalizedPhone,
+        clientEmail: normalizedEmail,
+        barberId: candidateBarberId,
+        barberUid,
+        barberName,
+        serviceId: input.serviceId,
+        serviceName,
+        priceCop,
+        durationMinutes,
+        date: input.date,
+        startTime: input.startTime,
+        endTime,
+        status: AppointmentStatus.CONFIRMED,
+        notes: trimmedNotes,
+        bookingCode,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      bookedSummary = toPublicSummary(appointmentId, citaPayload);
+      break;
+    } catch (error) {
+      if (
+        error instanceof FirestoreRestPermissionError &&
+        (error.status === 409 ||
+          error.status === 412 ||
+          error.code === 'ALREADY_EXISTS' ||
+          error.code === 'FAILED_PRECONDITION' ||
+          error.message.includes('ALREADY_EXISTS') ||
+          error.message.includes('FAILED_PRECONDITION'))
+      ) {
+        lastConflict = true;
+        continue;
+      }
+      throw error;
+    }
   }
 
-  const citaPayload: Record<string, unknown> = {
-    id: appointmentId,
-    clientId,
-    clientName: normalizedFullName,
-    clientPhone: normalizedPhone,
-    clientEmail: normalizedEmail,
-    barberId: chosenBarberId,
-    barberUid,
-    barberName,
-    serviceId: input.serviceId,
-    serviceName,
-    priceCop,
-    durationMinutes,
-    date: input.date,
-    startTime: input.startTime,
-    endTime,
-    status: AppointmentStatus.CONFIRMED,
-    bookingCode,
-  };
-  if (trimmedNotes) {
-    citaPayload.notes = trimmedNotes;
-  }
-
-  ops.push({
-    type: 'set',
-    collection: 'citas',
-    docId: appointmentId,
-    preconditionExists: false,
-    data: citaPayload,
-    serverTimestampFields: ['createdAt', 'updatedAt'],
-  });
-
-  try {
-    await serverCommitWrites(ops, idToken);
-  } catch (error) {
-    if (
-      error instanceof FirestoreRestPermissionError &&
-      (error.status === 409 || error.message.includes('ALREADY_EXISTS'))
-    ) {
+  if (!bookedAppointment || !bookedSummary) {
+    if (lastConflict) {
       throw new BookingConflictError(
         'Lo sentimos, ese horario acaba de ser reservado por otro cliente. Elige otra hora disponible.'
       );
     }
-    throw error;
+    throw new BookingConflictError(
+      'El barbero o el horario elegido ya no están disponibles.'
+    );
   }
 
-  const nowIso = new Date().toISOString();
-  const appointment: Appointment = {
-    id: appointmentId,
-    clientId,
-    clientName: normalizedFullName,
-    clientPhone: normalizedPhone,
-    clientEmail: normalizedEmail,
-    barberId: chosenBarberId,
-    barberUid,
-    barberName,
-    serviceId: input.serviceId,
-    serviceName,
-    priceCop,
-    durationMinutes,
-    date: input.date,
-    startTime: input.startTime,
-    endTime,
-    status: AppointmentStatus.CONFIRMED,
-    notes: trimmedNotes,
-    bookingCode,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  };
-
   return {
-    appointment,
-    summary: toPublicSummary(appointment.id, citaPayload),
+    appointment: bookedAppointment,
+    summary: bookedSummary,
   };
 }
 
@@ -1140,7 +1197,7 @@ async function resolveBookingDocByProof(
 ): Promise<ServerDocSnapshot> {
   if (!hasAdminServiceAccount() && !idToken) {
     throw new BookingConfigurationError(
-      'Faltan credenciales de servidor Firebase Admin (FIREBASE_ADMIN_CLIENT_EMAIL y FIREBASE_ADMIN_PRIVATE_KEY) para consultar reservas.'
+      'La consulta o modificación en línea por código requiere credenciales de servidor Firebase Admin (FIREBASE_ADMIN_CLIENT_EMAIL y FIREBASE_ADMIN_PRIVATE_KEY). Conserva tu código o contacta directamente a la barbería.'
     );
   }
 
@@ -1374,16 +1431,23 @@ export async function reschedulePublicBooking(
         c.slots.map((s) => db.collection('ocupacion').doc(s.slotKey))
       );
 
-      const [freshSnap, barberSnaps, dayApptsSnap, existingLocksSnap, flatNewLocks] =
-        await Promise.all([
-          tx.get(citaRef),
-          Promise.all(barberRefs.map((r) => tx.get(r))),
-          tx.get(db.collection('citas').where('date', '==', newSlot.date)),
-          tx.get(db.collection('ocupacion').where('appointmentId', '==', doc.id)),
-          newLockRefs.length > 0
-            ? tx.getAll(...newLockRefs)
-            : Promise.resolve([] as FirebaseFirestore.DocumentSnapshot[]),
-        ]);
+      const [
+        freshSnap,
+        barberSnaps,
+        dayApptsSnap,
+        dayBlocksSnap,
+        existingLocksSnap,
+        flatNewLocks,
+      ] = await Promise.all([
+        tx.get(citaRef),
+        Promise.all(barberRefs.map((r) => tx.get(r))),
+        tx.get(db.collection('citas').where('date', '==', newSlot.date)),
+        tx.get(db.collection('bloqueos').where('date', '==', newSlot.date)),
+        tx.get(db.collection('ocupacion').where('appointmentId', '==', doc.id)),
+        newLockRefs.length > 0
+          ? tx.getAll(...newLockRefs)
+          : Promise.resolve([] as FirebaseFirestore.DocumentSnapshot[]),
+      ]);
 
       if (!freshSnap.exists) {
         throw new BookingNotFoundError('La reserva ya no existe.');
@@ -1402,6 +1466,24 @@ export async function reschedulePublicBooking(
             String(lSnap.data()?.appointmentId ?? '')
           );
         }
+      }
+
+      const blocksByBarber = new Map<
+        string,
+        Array<{ start: number; end: number }>
+      >();
+      for (const bDoc of dayBlocksSnap.docs) {
+        const d = bDoc.data();
+        const bId = String(d.barberId ?? '');
+        const bStart = d.allDay
+          ? timeToMinutes(DEFAULT_OPEN_TIME)
+          : timeToMinutes(String(d.startTime));
+        const bEnd = d.allDay
+          ? timeToMinutes(DEFAULT_CLOSE_TIME)
+          : timeToMinutes(String(d.endTime));
+        const list = blocksByBarber.get(bId) ?? [];
+        list.push({ start: bStart, end: bEnd });
+        blocksByBarber.set(bId, list);
       }
 
       const startMin = timeToMinutes(newSlot.startTime);
@@ -1439,6 +1521,13 @@ export async function reschedulePublicBooking(
           );
         });
         if (hasApptOverlap) continue;
+
+        const globalBlocks = blocksByBarber.get('all') ?? [];
+        const personalBlocks = blocksByBarber.get(bId) ?? [];
+        const hasBlockOverlap = [...globalBlocks, ...personalBlocks].some((bl) =>
+          intervalsOverlap(startMin, endMin, bl.start, bl.end)
+        );
+        if (hasBlockOverlap) continue;
 
         chosen = {
           id: bId,
@@ -1569,7 +1658,10 @@ export async function reschedulePublicBooking(
   } catch (error) {
     if (
       error instanceof FirestoreRestPermissionError &&
-      (error.status === 409 || error.message.includes('ALREADY_EXISTS'))
+      (error.status === 409 ||
+        error.status === 412 ||
+        error.code === 'ALREADY_EXISTS' ||
+        error.message.includes('ALREADY_EXISTS'))
     ) {
       throw new BookingConflictError(
         'Ese nuevo horario acaba de ser tomado. Selecciona otro disponible.'

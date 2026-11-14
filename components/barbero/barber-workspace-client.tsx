@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import {
   AlertCircle,
   Calendar,
@@ -21,6 +22,10 @@ import {
   APPOINTMENT_STATUS_LABELS,
   DAYS_OF_WEEK_ES,
 } from '@/lib/constants/config';
+import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
 import { formatCurrencyCOP, formatTime12h } from '@/lib/utils/timezone';
 import type { BarberAgendaRange, BarberWorkspaceData } from '@/services/barbero';
 import { AppointmentStatus, type DaySchedule } from '@/types';
@@ -108,11 +113,16 @@ export function BarberWorkspaceClient({
         method: 'GET',
         cache: 'no-store',
       });
-      const payload = (await res.json()) as BarberWorkspaceData & {
-        error?: string;
-      };
-      if (!res.ok) {
-        throw new Error(payload.error || 'No se pudo cargar la agenda.');
+      const payload = await parseJsonResponseSafe<
+        BarberWorkspaceData & { error?: string }
+      >(res);
+      if (!res.ok || !payload) {
+        throw new Error(
+          translateErrorMessageEs(
+            payload?.error,
+            'No se pudo cargar la agenda.'
+          )
+        );
       }
       setWorkspace(payload);
       if (nextParams?.syncSchedule) {
@@ -121,10 +131,10 @@ export function BarberWorkspaceClient({
     } catch (error) {
       setFeedback({
         type: 'error',
-        text:
-          error instanceof Error
-            ? error.message
-            : 'No fue posible actualizar la agenda.',
+        text: translateErrorMessageEs(
+          error,
+          'No fue posible actualizar la agenda.'
+        ),
       });
     } finally {
       setLoadingAgenda(false);
@@ -143,10 +153,16 @@ export function BarberWorkspaceClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
       });
-      const payload = (await res.json()) as { message?: string; error?: string };
+      const payload =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
       if (!res.ok) {
         throw new Error(
-          payload.error || 'No se pudo actualizar el estado de la cita.'
+          translateErrorMessageEs(
+            payload.error,
+            'No se pudo actualizar el estado de la cita.'
+          )
         );
       }
       setConfirmAction(null);
@@ -158,10 +174,7 @@ export function BarberWorkspaceClient({
     } catch (error) {
       setFeedback({
         type: 'error',
-        text:
-          error instanceof Error
-            ? error.message
-            : 'Error al actualizar la cita.',
+        text: translateErrorMessageEs(error, 'Error al actualizar la cita.'),
       });
     } finally {
       setUpdatingAppointmentId(null);
@@ -189,9 +202,17 @@ export function BarberWorkspaceClient({
           days: scheduleDays,
         }),
       });
-      const payload = (await res.json()) as { message?: string; error?: string };
+      const payload =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
       if (!res.ok) {
-        throw new Error(payload.error || 'No se pudo guardar el horario.');
+        throw new Error(
+          translateErrorMessageEs(
+            payload.error,
+            'No se pudo guardar el horario.'
+          )
+        );
       }
       setFeedback({
         type: 'success',
@@ -201,10 +222,10 @@ export function BarberWorkspaceClient({
     } catch (error) {
       setFeedback({
         type: 'error',
-        text:
-          error instanceof Error
-            ? error.message
-            : 'No fue posible guardar tu horario.',
+        text: translateErrorMessageEs(
+          error,
+          'No fue posible guardar tu horario.'
+        ),
       });
     } finally {
       setSavingSchedule(false);
@@ -236,9 +257,17 @@ export function BarberWorkspaceClient({
           reason: blockReason,
         }),
       });
-      const payload = (await res.json()) as { message?: string; error?: string };
+      const payload =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
       if (!res.ok) {
-        throw new Error(payload.error || 'No se pudo registrar el bloqueo.');
+        throw new Error(
+          translateErrorMessageEs(
+            payload.error,
+            'No se pudo registrar el bloqueo.'
+          )
+        );
       }
       setBlockReason('');
       setFeedback({
@@ -249,10 +278,10 @@ export function BarberWorkspaceClient({
     } catch (error) {
       setFeedback({
         type: 'error',
-        text:
-          error instanceof Error
-            ? error.message
-            : 'Error al registrar el bloqueo personal.',
+        text: translateErrorMessageEs(
+          error,
+          'Error al registrar el bloqueo personal.'
+        ),
       });
     } finally {
       setCreatingBlock(false);
@@ -266,9 +295,17 @@ export function BarberWorkspaceClient({
       const res = await fetch(`/api/barbero/bloqueos/${blockId}`, {
         method: 'DELETE',
       });
-      const payload = (await res.json()) as { message?: string; error?: string };
+      const payload =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
       if (!res.ok) {
-        throw new Error(payload.error || 'No se pudo eliminar el bloqueo.');
+        throw new Error(
+          translateErrorMessageEs(
+            payload.error,
+            'No se pudo eliminar el bloqueo.'
+          )
+        );
       }
       setConfirmDeleteBlockId(null);
       setFeedback({
@@ -279,10 +316,7 @@ export function BarberWorkspaceClient({
     } catch (error) {
       setFeedback({
         type: 'error',
-        text:
-          error instanceof Error
-            ? error.message
-            : 'Error al eliminar el bloqueo.',
+        text: translateErrorMessageEs(error, 'Error al eliminar el bloqueo.'),
       });
     } finally {
       setDeletingBlockId(null);
@@ -312,6 +346,29 @@ export function BarberWorkspaceClient({
     status === AppointmentStatus.COMPLETED ||
     status === AppointmentStatus.CANCELLED ||
     status === AppointmentStatus.NO_SHOW;
+
+  if (!workspace.barber.id) {
+    return (
+      <div className="rounded-xl border border-stone-200 bg-white p-8 text-center">
+        <CalendarOff className="mx-auto h-8 w-8 text-amber-700" aria-hidden="true" />
+        <h1 className="mt-3 font-[var(--font-playfair)] text-2xl font-semibold text-stone-900">
+          No hay barberos registrados todavía
+        </h1>
+        <p className="mx-auto mt-2 max-w-md text-sm text-stone-600">
+          Crea al menos un barbero manualmente para administrar su agenda de
+          citas, horario semanal y bloqueos personales.
+        </p>
+        {isAdminPreview && (
+          <Link
+            href="/admin/barberos"
+            className="mt-5 inline-flex min-h-[42px] items-center rounded-lg bg-stone-900 px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-stone-800"
+          >
+            Ir a Administración de barberos
+          </Link>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">

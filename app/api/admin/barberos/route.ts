@@ -5,8 +5,14 @@ import {
   getFirebaseProjectConfig,
   hasAdminServiceAccount,
 } from '@/lib/firebase-admin';
-import { serverSetDoc } from '@/lib/firestore-server';
+import {
+  serverCommitWrites,
+  serverGetDoc,
+  serverQueryCollection,
+  serverSetDoc,
+} from '@/lib/firestore-server';
 import { createBarberSchema } from '@/lib/validators/admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { generateUniqueDocId, listAdminBarbers } from '@/services/admin';
 import { UserRole } from '@/types';
 
@@ -37,13 +43,11 @@ async function createAuthUserViaWebApi(params: {
 
   if (!signUpRes.ok || !signUpJson.localId) {
     const rawMsg = signUpJson.error?.message ?? '';
-    if (rawMsg === 'EMAIL_EXISTS') {
-      throw new Error(
-        'Ese correo ya está registrado en Firebase Authentication.'
-      );
-    }
     throw new Error(
-      rawMsg || 'No fue posible crear la cuenta en Firebase Authentication.'
+      translateErrorMessageEs(
+        rawMsg,
+        'No fue posible crear la cuenta de acceso del barbero.'
+      )
     );
   }
 
@@ -69,8 +73,20 @@ export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const barbers = await listAdminBarbers(authResult.idToken);
-  return NextResponse.json({ barbers });
+  try {
+    const barbers = await listAdminBarbers(authResult.idToken);
+    return NextResponse.json({ barbers });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: translateErrorMessageEs(
+          error,
+          'No fue posible cargar la lista de barberos.'
+        ),
+      },
+      { status: 400 }
+    );
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -82,7 +98,12 @@ export async function POST(request: NextRequest) {
     const parsed = createBarberSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Verifica los datos ingresados del barbero.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -175,10 +196,75 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible registrar el barbero.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible registrar el barbero.'
+    );
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const authResult = await requireApiRole(request, [UserRole.ADMIN]);
+  if (!authResult.ok) return authResult.response;
+
+  try {
+    const barbersDocs = await serverQueryCollection(
+      'barberos',
+      {},
+      authResult.idToken
+    );
+
+    if (barbersDocs.length === 0) {
+      return NextResponse.json({
+        deletedCount: 0,
+        message: 'No hay barberos registrados para eliminar.',
+      });
+    }
+
+    const deleteOps: Array<{
+      type: 'delete';
+      collection: string;
+      docId: string;
+    }> = [];
+
+    for (const doc of barbersDocs) {
+      deleteOps.push({ type: 'delete', collection: 'barberos', docId: doc.id });
+      deleteOps.push({ type: 'delete', collection: 'horarios', docId: doc.id });
+
+      const userId = String(doc.data?.userId ?? '').trim();
+      if (userId) {
+        const userSnap = await serverGetDoc(
+          'usuarios',
+          userId,
+          authResult.idToken
+        ).catch(() => ({ exists: false, data: undefined }));
+        if (userSnap.exists && userSnap.data?.role === UserRole.BARBER) {
+          deleteOps.push({
+            type: 'delete',
+            collection: 'usuarios',
+            docId: userId,
+          });
+          if (hasAdminServiceAccount()) {
+            await getAdminAuth().deleteUser(userId).catch(() => {});
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < deleteOps.length; i += 400) {
+      await serverCommitWrites(deleteOps.slice(i, i + 400), authResult.idToken);
+    }
+
+    return NextResponse.json({
+      deletedCount: barbersDocs.length,
+      message: `Se eliminaron ${barbersDocs.length} barbero(s). Ahora puedes agregarlos manualmente.`,
+    });
+  } catch (error) {
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible vaciar la lista de barberos.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

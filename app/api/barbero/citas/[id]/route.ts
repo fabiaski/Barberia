@@ -7,8 +7,11 @@ import {
   serverQueryCollection,
   type ServerBatchOperation,
 } from '@/lib/firestore-server';
+import { createBookingManageToken } from '@/lib/auth/manage-token';
 import { barberUpdateAppointmentStatusSchema } from '@/lib/validators/barbero';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { buildOccupancySlotKeys } from '@/services/booking';
+import { sendBookingCancelledEmails } from '@/services/email';
 import { AppointmentStatus, UserRole } from '@/types';
 
 const TERMINAL_STATUSES = new Set<string>([
@@ -34,7 +37,12 @@ export async function PATCH(
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Estado inválido.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'El estado de la cita no es válido.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -136,15 +144,48 @@ export async function PATCH(
 
     await serverCommitWrites(ops, authResult.idToken);
 
+    if (nextStatus === AppointmentStatus.CANCELLED) {
+      const clientEmail = String(apptData.clientEmail ?? '');
+      await sendBookingCancelledEmails({
+        summary: {
+          id: appointmentId,
+          bookingCode: String(
+            apptData.bookingCode ?? appointmentId.slice(0, 8).toUpperCase()
+          ),
+          serviceId: String(apptData.serviceId ?? ''),
+          serviceName: String(apptData.serviceName ?? ''),
+          priceCop: Number(apptData.priceCop ?? 0),
+          durationMinutes: Number(apptData.durationMinutes ?? 30),
+          barberId: String(apptData.barberId ?? ''),
+          barberName: String(apptData.barberName ?? ''),
+          date: String(apptData.date ?? ''),
+          startTime: String(apptData.startTime ?? ''),
+          endTime: String(apptData.endTime ?? ''),
+          status: AppointmentStatus.CANCELLED,
+          notes: apptData.notes ? String(apptData.notes) : undefined,
+          clientName: String(apptData.clientName ?? ''),
+          clientPhone: String(apptData.clientPhone ?? ''),
+          clientEmail,
+          canModify: false,
+          manageToken: createBookingManageToken(appointmentId, clientEmail),
+        },
+        cancelledBy:
+          authResult.user.role === UserRole.ADMIN ? 'admin' : 'barbero',
+        barberUid: String(apptData.barberUid ?? ''),
+        idToken: authResult.idToken,
+        requestOrigin: request.nextUrl.origin,
+      });
+    }
+
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',
       status: nextStatus,
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible actualizar el estado de la cita.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible actualizar el estado de la cita.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

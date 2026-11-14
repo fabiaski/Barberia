@@ -29,6 +29,10 @@ import {
   formatCurrencyCOP,
   formatTime12h,
 } from '@/lib/utils/timezone';
+import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
 import type { PublicBookingSummary } from '@/services/booking';
 import type { PublicCatalogData } from '@/services/public-catalog';
 import { AppointmentStatus } from '@/types';
@@ -191,14 +195,18 @@ export function ManageBookingPanel({
         }),
       });
 
-      const payload = (await res.json()) as {
-        summary?: PublicBookingSummary;
-        error?: string;
-      };
+      const payload =
+        (await parseJsonResponseSafe<{
+          summary?: PublicBookingSummary;
+          error?: string;
+        }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
         setErrorMsg(
-          payload.error ?? 'No encontramos ninguna reserva con esos datos.'
+          translateErrorMessageEs(
+            payload.error,
+            'No encontramos ninguna reserva con esos datos.'
+          )
         );
         return;
       }
@@ -208,8 +216,13 @@ export function ManageBookingPanel({
       setNewDate(payload.summary.date);
       setRescheduleOpen(false);
       setConfirmCancelOpen(false);
-    } catch {
-      setErrorMsg('No fue posible conectar con el servidor. Intenta de nuevo.');
+    } catch (error) {
+      setErrorMsg(
+        translateErrorMessageEs(
+          error,
+          'No fue posible conectar con el servidor. Intenta de nuevo.'
+        )
+      );
     } finally {
       setLookupLoading(false);
     }
@@ -231,14 +244,20 @@ export function ManageBookingPanel({
         }),
       });
 
-      const payload = (await res.json()) as {
-        summary?: PublicBookingSummary;
-        message?: string;
-        error?: string;
-      };
+      const payload =
+        (await parseJsonResponseSafe<{
+          summary?: PublicBookingSummary;
+          message?: string;
+          error?: string;
+        }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
-        setErrorMsg(payload.error ?? 'No fue posible cancelar la cita.');
+        setErrorMsg(
+          translateErrorMessageEs(
+            payload.error,
+            'No fue posible cancelar la cita.'
+          )
+        );
         return;
       }
 
@@ -248,8 +267,13 @@ export function ManageBookingPanel({
       setSuccessMsg(
         payload.message ?? 'Tu cita fue cancelada y el horario quedó libre.'
       );
-    } catch {
-      setErrorMsg('Error de conexión al cancelar la cita.');
+    } catch (error) {
+      setErrorMsg(
+        translateErrorMessageEs(
+          error,
+          'Error de conexión al cancelar la cita.'
+        )
+      );
     } finally {
       setActionLoading(false);
     }
@@ -277,15 +301,21 @@ export function ManageBookingPanel({
         }),
       });
 
-      const payload = (await res.json()) as {
-        summary?: PublicBookingSummary;
-        message?: string;
-        error?: string;
-        code?: string;
-      };
+      const payload =
+        (await parseJsonResponseSafe<{
+          summary?: PublicBookingSummary;
+          message?: string;
+          error?: string;
+          code?: string;
+        }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
-        setErrorMsg(payload.error ?? 'No fue posible reprogramar la cita.');
+        setErrorMsg(
+          translateErrorMessageEs(
+            payload.error,
+            'No fue posible reprogramar la cita.'
+          )
+        );
         if (res.status === 409) {
           setRefreshNonce((n) => n + 1);
         }
@@ -297,8 +327,13 @@ export function ManageBookingPanel({
       setSuccessMsg(
         payload.message ?? 'Tu cita fue reprogramada correctamente.'
       );
-    } catch {
-      setErrorMsg('Error de conexión al reprogramar la cita.');
+    } catch (error) {
+      setErrorMsg(
+        translateErrorMessageEs(
+          error,
+          'Error de conexión al reprogramar la cita.'
+        )
+      );
     } finally {
       setActionLoading(false);
     }

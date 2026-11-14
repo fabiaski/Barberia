@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
 import { serverSetDoc } from '@/lib/firestore-server';
 import { barberUpdateScheduleSchema } from '@/lib/validators/barbero';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { resolveBarberForSession } from '@/services/barbero';
 import { UserRole } from '@/types';
 
@@ -18,7 +19,12 @@ export async function PUT(request: NextRequest) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Horario inválido.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'El formato del horario no es válido.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -58,10 +64,10 @@ export async function PUT(request: NextRequest) {
       message: `Horario personalizado de ${barber.name} guardado correctamente.`,
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible guardar tu horario personalizado.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible guardar tu horario personalizado.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

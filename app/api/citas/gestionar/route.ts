@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasAdminServiceAccount } from '@/lib/firebase-admin';
 import { getServerIdToken } from '@/lib/firestore-server';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { manageBookingRequestSchema } from '@/lib/validators/booking';
 import {
   BookingConfigurationError,
@@ -12,6 +13,10 @@ import {
   reschedulePublicBooking,
   type BookingAuthProof,
 } from '@/services/booking';
+import {
+  sendBookingCancelledEmails,
+  sendBookingRescheduledEmails,
+} from '@/services/email';
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,9 +26,10 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json(
         {
-          error:
-            parsed.error.issues[0]?.message ??
-            'Verifica los datos de tu reserva.',
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Verifica los datos de tu reserva.'
+          ),
         },
         { status: 400 }
       );
@@ -57,12 +63,20 @@ export async function POST(request: NextRequest) {
 
     if (data.mode === 'cancel') {
       const summary = await cancelPublicBooking(proof, idToken);
+      const emailNotification = await sendBookingCancelledEmails({
+        summary,
+        cancelledBy: 'cliente',
+        idToken,
+        requestOrigin: request.nextUrl.origin,
+      });
       return NextResponse.json({
         message: 'Tu cita fue cancelada y el horario quedó liberado.',
         summary,
+        emailNotification,
       });
     }
 
+    const previousSummary = await lookupPublicBooking(proof, idToken);
     const summary = await reschedulePublicBooking(
       proof,
       {
@@ -73,9 +87,19 @@ export async function POST(request: NextRequest) {
       idToken
     );
 
+    const emailNotification = await sendBookingRescheduledEmails({
+      summary,
+      previousDate: previousSummary.date,
+      previousStartTime: previousSummary.startTime,
+      previousEndTime: previousSummary.endTime,
+      idToken,
+      requestOrigin: request.nextUrl.origin,
+    });
+
     return NextResponse.json({
       message: 'Tu cita fue reprogramada correctamente.',
       summary,
+      emailNotification,
     });
   } catch (error) {
     if (error instanceof BookingConflictError) {
@@ -103,10 +127,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible procesar la solicitud sobre la reserva.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible procesar la solicitud sobre la reserva.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

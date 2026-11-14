@@ -6,6 +6,7 @@ import {
   serverSetDoc,
 } from '@/lib/firestore-server';
 import { createBlockSchema } from '@/lib/validators/admin';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { getAdminSchedulesAndBlocks } from '@/services/admin';
 import { UserRole } from '@/types';
 
@@ -13,8 +14,20 @@ export async function GET(request: NextRequest) {
   const authResult = await requireApiRole(request, [UserRole.ADMIN]);
   if (!authResult.ok) return authResult.response;
 
-  const { blocks } = await getAdminSchedulesAndBlocks(authResult.idToken);
-  return NextResponse.json({ blocks });
+  try {
+    const { blocks } = await getAdminSchedulesAndBlocks(authResult.idToken);
+    return NextResponse.json({ blocks });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: translateErrorMessageEs(
+          error,
+          'No fue posible consultar los bloqueos.'
+        ),
+      },
+      { status: 400 }
+    );
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -27,7 +40,12 @@ export async function POST(request: NextRequest) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' },
+        {
+          error: translateErrorMessageEs(
+            parsed.error.issues[0]?.message,
+            'Verifica los datos del bloqueo.'
+          ),
+        },
         { status: 400 }
       );
     }
@@ -74,10 +92,10 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible crear el bloqueo.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible crear el bloqueo.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

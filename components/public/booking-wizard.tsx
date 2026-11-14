@@ -41,6 +41,7 @@ import {
   timeToMinutes,
 } from '@/lib/utils/timezone';
 import { SYSTEM_TIMEZONE } from '@/lib/constants/config';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import type { PublicBookingSummary } from '@/services/booking';
 import type { PublicCatalogData } from '@/services/public-catalog';
 
@@ -49,6 +50,7 @@ interface BookingWizardProps {
   initialServiceId?: string;
   initialBarberId?: string;
   initialMode?: 'book' | 'manage';
+  initialManageSummary?: PublicBookingSummary | null;
 }
 
 interface LiveAvailabilityPayload {
@@ -62,6 +64,7 @@ export function BookingWizard({
   initialServiceId,
   initialBarberId,
   initialMode = 'book',
+  initialManageSummary = null,
 }: BookingWizardProps) {
   const { config, schedule, services, barbers } = catalog;
 
@@ -70,14 +73,16 @@ export function BookingWizard({
 
   const [mode, setMode] = useState<'book' | 'manage'>(initialMode);
   const [manageInitialSummary, setManageInitialSummary] =
-    useState<PublicBookingSummary | null>(null);
+    useState<PublicBookingSummary | null>(initialManageSummary);
 
   const [step, setStep] = useState<1 | 2 | 3>(validInitialService ? 2 : 1);
   const [selectedServiceId, setSelectedServiceId] = useState<string>(
     validInitialService?.id ?? services[0]?.id ?? ''
   );
   const [selectedBarberId, setSelectedBarberId] = useState<string>(
-    validInitialBarber?.id ?? barbers[0]?.id ?? 'any'
+    barbers.length === 0
+      ? ''
+      : (validInitialBarber?.id ?? barbers[0]?.id ?? 'any')
   );
   const [barberMenuOpen, setBarberMenuOpen] = useState(false);
 
@@ -110,6 +115,7 @@ export function BookingWizard({
   const [slotError, setSlotError] = useState<string>('');
   const [confirmedSummary, setConfirmedSummary] =
     useState<PublicBookingSummary | null>(null);
+  const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -195,7 +201,7 @@ export function BookingWizard({
   ]);
 
   const fallbackSlots = useMemo(() => {
-    if (!selectedDate || !activeService) return [];
+    if (!selectedDate || !activeService || barbers.length === 0) return [];
     const dayObj = schedule.days.find(
       (d) => d.dayOfWeek === selectedDateMeta?.dayOfWeek
     );
@@ -208,6 +214,7 @@ export function BookingWizard({
   }, [
     selectedDate,
     activeService,
+    barbers.length,
     schedule.days,
     selectedDateMeta,
     config.slotIntervalMinutes,
@@ -343,28 +350,40 @@ export function BookingWizard({
         }),
       });
 
-      const payload = (await response.json()) as {
+      const rawText = await response.text();
+      let payload: {
         summary?: PublicBookingSummary;
+        emailNotification?: { sent?: boolean };
         error?: string;
         code?: string;
-      };
+      } = {};
+      try {
+        payload = rawText ? (JSON.parse(rawText) as typeof payload) : {};
+      } catch {
+        payload = {};
+      }
 
       if (!response.ok || !payload.summary) {
         setSubmitError({
-          message:
-            payload.error ??
-            'No fue posible confirmar tu cita en este momento.',
+          message: translateErrorMessageEs(
+            payload.error,
+            'No fue posible confirmar tu cita en este momento.'
+          ),
           code: payload.code,
         });
         return;
       }
 
       setConfirmedSummary(payload.summary);
+      setConfirmationEmailSent(Boolean(payload.emailNotification?.sent));
       setAvailabilityRefreshNonce((n) => n + 1);
-    } catch {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
       setSubmitError({
-        message:
-          'No pudimos conectarnos con el servidor. Verifica tu conexión e intenta nuevamente.',
+        message: translateErrorMessageEs(
+          error,
+          'No pudimos conectarnos con el servidor. Verifica tu conexión e intenta nuevamente.'
+        ),
       });
     } finally {
       setIsSubmitting(false);
@@ -373,6 +392,7 @@ export function BookingWizard({
 
   const handleReset = () => {
     setConfirmedSummary(null);
+    setConfirmationEmailSent(false);
     setSubmitError(null);
     setStep(1);
     setSlotError('');
@@ -567,6 +587,16 @@ export function BookingWizard({
                   </span>
                   . Guarda tu código de reserva por si necesitas reprogramar o
                   cancelar tu turno.
+                  {confirmationEmailSent && (
+                    <>
+                      {' '}
+                      También enviamos el comprobante con enlace directo a{' '}
+                      <span className="font-medium text-stone-200">
+                        {confirmedSummary.clientEmail}
+                      </span>
+                      .
+                    </>
+                  )}
                 </p>
 
                 {/* Código de reserva destacado */}
@@ -763,102 +793,110 @@ export function BookingWizard({
                   </div>
 
                   {/* Selector de colaborador */}
-                  <div className="relative mt-5">
-                    <p className="text-xs font-medium text-stone-400">
-                      Colaborador seleccionado:
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => setBarberMenuOpen((prev) => !prev)}
-                      aria-expanded={barberMenuOpen}
-                      className="mt-2 inline-flex min-h-[46px] items-center gap-3 rounded-full border border-stone-700 bg-stone-950 py-1.5 pl-2 pr-4 text-left transition-colors hover:border-stone-500"
-                    >
-                      <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-800">
-                        {activeBarber?.photoUrl ? (
-                          <Image
-                            src={activeBarber.photoUrl}
-                            alt={activeBarber.name}
-                            fill
-                            sizes="32px"
-                            referrerPolicy="no-referrer"
-                            className="object-cover"
-                          />
-                        ) : (
-                          <User
-                            className="h-4 w-4 text-amber-500"
-                            aria-hidden="true"
-                          />
-                        )}
-                      </span>
-                      <span className="text-xs font-semibold uppercase tracking-wide text-white">
-                        {barberDisplayName}
-                      </span>
-                      <ChevronDown
-                        className="h-4 w-4 text-stone-400"
-                        aria-hidden="true"
-                      />
-                    </button>
+                  {barbers.length === 0 ? (
+                    <div className="mt-5 rounded-xl border border-amber-700/40 bg-amber-950/20 p-4 text-xs leading-relaxed text-amber-200">
+                      En este momento no hay barberos activos registrados para
+                      agendar. Agrega al menos un barbero desde Administración o
+                      vuelve más tarde.
+                    </div>
+                  ) : (
+                    <div className="relative mt-5">
+                      <p className="text-xs font-medium text-stone-400">
+                        Colaborador seleccionado:
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setBarberMenuOpen((prev) => !prev)}
+                        aria-expanded={barberMenuOpen}
+                        className="mt-2 inline-flex min-h-[46px] items-center gap-3 rounded-full border border-stone-700 bg-stone-950 py-1.5 pl-2 pr-4 text-left transition-colors hover:border-stone-500"
+                      >
+                        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-800">
+                          {activeBarber?.photoUrl ? (
+                            <Image
+                              src={activeBarber.photoUrl}
+                              alt={activeBarber.name}
+                              fill
+                              sizes="32px"
+                              referrerPolicy="no-referrer"
+                              className="object-cover"
+                            />
+                          ) : (
+                            <User
+                              className="h-4 w-4 text-amber-500"
+                              aria-hidden="true"
+                            />
+                          )}
+                        </span>
+                        <span className="text-xs font-semibold uppercase tracking-wide text-white">
+                          {barberDisplayName}
+                        </span>
+                        <ChevronDown
+                          className="h-4 w-4 text-stone-400"
+                          aria-hidden="true"
+                        />
+                      </button>
 
-                    {barberMenuOpen && (
-                      <div className="absolute left-0 z-20 mt-2 w-full max-w-xs rounded-xl border border-stone-700 bg-stone-950 p-1.5 shadow-xl">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedBarberId('any');
-                            setBarberMenuOpen(false);
-                          }}
-                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition-colors ${
-                            selectedBarberId === 'any'
-                              ? 'bg-stone-800 font-semibold text-white'
-                              : 'text-stone-300 hover:bg-stone-900'
-                          }`}
-                        >
-                          <User
-                            className="h-4 w-4 shrink-0 text-amber-500"
-                            aria-hidden="true"
-                          />
-                          <span>Primer barbero disponible</span>
-                        </button>
-
-                        {barbers.map((barber) => (
+                      {barberMenuOpen && (
+                        <div className="absolute left-0 z-20 mt-2 w-full max-w-xs rounded-xl border border-stone-700 bg-stone-950 p-1.5 shadow-xl">
                           <button
-                            key={barber.id}
                             type="button"
                             onClick={() => {
-                              setSelectedBarberId(barber.id);
+                              setSelectedBarberId('any');
                               setBarberMenuOpen(false);
                             }}
-                            className={`mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition-colors ${
-                              selectedBarberId === barber.id
+                            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition-colors ${
+                              selectedBarberId === 'any'
                                 ? 'bg-stone-800 font-semibold text-white'
                                 : 'text-stone-300 hover:bg-stone-900'
                             }`}
                           >
-                            <span className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full bg-stone-800">
-                              {barber.photoUrl && (
-                                <Image
-                                  src={barber.photoUrl}
-                                  alt={barber.name}
-                                  fill
-                                  sizes="24px"
-                                  referrerPolicy="no-referrer"
-                                  className="object-cover"
-                                />
-                              )}
-                            </span>
-                            <div className="min-w-0">
-                              <p className="truncate font-semibold text-white">
-                                {barber.name}
-                              </p>
-                              <p className="truncate text-[11px] text-stone-400">
-                                {barber.specialty}
-                              </p>
-                            </div>
+                            <User
+                              className="h-4 w-4 shrink-0 text-amber-500"
+                              aria-hidden="true"
+                            />
+                            <span>Primer barbero disponible</span>
                           </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+
+                          {barbers.map((barber) => (
+                            <button
+                              key={barber.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedBarberId(barber.id);
+                                setBarberMenuOpen(false);
+                              }}
+                              className={`mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition-colors ${
+                                selectedBarberId === barber.id
+                                  ? 'bg-stone-800 font-semibold text-white'
+                                  : 'text-stone-300 hover:bg-stone-900'
+                              }`}
+                            >
+                              <span className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full bg-stone-800">
+                                {barber.photoUrl && (
+                                  <Image
+                                    src={barber.photoUrl}
+                                    alt={barber.name}
+                                    fill
+                                    sizes="24px"
+                                    referrerPolicy="no-referrer"
+                                    className="object-cover"
+                                  />
+                                )}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="truncate font-semibold text-white">
+                                  {barber.name}
+                                </p>
+                                <p className="truncate text-[11px] text-stone-400">
+                                  {barber.specialty}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Tarjeta interna: Horarios disponibles */}
                   <div className="mt-6 rounded-xl border border-stone-800 bg-stone-950/70 p-5 sm:p-6">
@@ -1091,14 +1129,6 @@ export function BookingWizard({
                             >
                               Ver otros horarios disponibles
                             </button>
-                          )}
-                          {submitError.code === 'MISSING_ADMIN_CREDENTIALS' && (
-                            <Link
-                              href="/login"
-                              className="inline-flex min-h-[36px] items-center rounded-lg border border-stone-700 bg-stone-900 px-3 py-1.5 text-xs font-medium text-stone-200 transition-colors hover:text-white"
-                            >
-                              Iniciar sesión como administrador
-                            </Link>
                           )}
                         </div>
                       </div>

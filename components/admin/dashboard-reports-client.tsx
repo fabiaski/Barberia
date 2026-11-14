@@ -3,6 +3,10 @@
 import { useState } from 'react';
 import { Filter, Loader2, RefreshCw } from 'lucide-react';
 import { APPOINTMENT_STATUS_LABELS } from '@/lib/constants/config';
+import {
+  parseJsonResponseSafe,
+  translateErrorMessageEs,
+} from '@/lib/utils/error-es';
 import { formatCurrencyCOP, formatTime12h } from '@/lib/utils/timezone';
 import type { AdminBarberRecord, AdminReportSummary } from '@/services/admin';
 import { AppointmentStatus, type Appointment } from '@/types';
@@ -60,21 +64,24 @@ export function DashboardReportsClient({
       const response = await fetch(`/api/admin/citas?${params.toString()}`, {
         credentials: 'include',
       });
-      const data = (await response.json()) as {
-        appointments?: Appointment[];
-        summary?: AdminReportSummary;
-        error?: string;
-      };
+      const data =
+        (await parseJsonResponseSafe<{
+          appointments?: Appointment[];
+          summary?: AdminReportSummary;
+          error?: string;
+        }>(response)) ?? {};
 
       if (!response.ok || !data.appointments || !data.summary) {
-        throw new Error(data.error || 'Error al cargar el reporte.');
+        throw new Error(
+          translateErrorMessageEs(data.error, 'Error al cargar el reporte.')
+        );
       }
 
       setAppointments(data.appointments);
       setSummary(data.summary);
     } catch (err) {
       setFeedback(
-        err instanceof Error ? err.message : 'No fue posible filtrar las citas.'
+        translateErrorMessageEs(err, 'No fue posible filtrar las citas.')
       );
     } finally {
       setLoading(false);
@@ -94,14 +101,17 @@ export function DashboardReportsClient({
         credentials: 'include',
         body: JSON.stringify({ appointmentId, status: newStatus }),
       });
-      const data = (await response.json()) as { error?: string };
+      const data =
+        (await parseJsonResponseSafe<{ error?: string }>(response)) ?? {};
       if (!response.ok) {
-        throw new Error(data.error || 'No se pudo actualizar la cita.');
+        throw new Error(
+          translateErrorMessageEs(data.error, 'No se pudo actualizar la cita.')
+        );
       }
       await applyFilters();
     } catch (err) {
       setFeedback(
-        err instanceof Error ? err.message : 'Error al actualizar el estado.'
+        translateErrorMessageEs(err, 'Error al actualizar el estado.')
       );
     } finally {
       setUpdatingId(null);

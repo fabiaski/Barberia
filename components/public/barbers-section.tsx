@@ -27,7 +27,18 @@ export function BarbersSection({ barbers }: BarbersSectionProps) {
           </p>
         </div>
 
-        {isSingleBarber ? (
+        {barbers.length === 0 ? (
+          <div className="mt-10 rounded-xl border border-dashed border-stone-300 bg-white p-8 text-center">
+            <Scissors className="mx-auto h-7 w-7 text-amber-700" aria-hidden="true" />
+            <h3 className="mt-3 font-[var(--font-playfair)] text-xl font-semibold text-stone-900">
+              Equipo en actualización
+            </h3>
+            <p className="mx-auto mt-2 max-w-md text-sm text-stone-600">
+              Estamos preparando los perfiles de nuestros barberos. Muy pronto
+              podrás elegir directamente a tu profesional favorito desde aquí.
+            </p>
+          </div>
+        ) : isSingleBarber ? (
           <div className="mt-10">
             {barbers.map((barber) => (
               <article

@@ -10,6 +10,7 @@ import {
 import { hasAdminServiceAccount } from '@/lib/firebase-admin';
 import { ID_TOKEN_COOKIE_NAME } from '@/lib/firestore-server';
 import { sessionExchangeSchema } from '@/lib/validators/auth';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { ensureInitialCatalogSeeded } from '@/services/public-catalog';
 import { UserRole } from '@/types';
 
@@ -128,10 +129,10 @@ export async function POST(request: NextRequest) {
 
     return response;
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible validar la sesión.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible validar la sesión. Inicia sesión nuevamente.'
+    );
     return NextResponse.json({ error: message }, { status: 401 });
   }
 }

@@ -110,7 +110,7 @@ export async function resolveBarberForSession(
     }
 
     const fallback: Barber = {
-      id: barberId || 'jose',
+      id: barberId || '',
       userId: session.uid,
       name: session.displayName,
       specialty: 'Barbero del equipo',
@@ -120,9 +120,9 @@ export async function resolveBarberForSession(
     };
     return {
       barber: fallback,
-      availableBarbers: [
-        { id: fallback.id, name: fallback.name, active: fallback.active },
-      ],
+      availableBarbers: fallback.id
+        ? [{ id: fallback.id, name: fallback.name, active: fallback.active }]
+        : [],
     };
   }
 
@@ -151,11 +151,11 @@ export async function resolveBarberForSession(
     parsedBarbers.find((b) => b.id === session.barberId) ??
     parsedBarbers.find((b) => b.active) ??
     parsedBarbers[0] ?? {
-      id: 'jose',
-      userId: 'barber_jose',
-      name: 'José',
-      specialty: 'Corte clásico y barba',
-      active: true,
+      id: '',
+      userId: '',
+      name: 'Sin barberos registrados',
+      specialty: 'Agrega un barbero desde Administración',
+      active: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

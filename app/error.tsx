@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { AlertCircle, RotateCcw, Home } from 'lucide-react';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 
 export default function GlobalError({
   error,
@@ -14,6 +15,13 @@ export default function GlobalError({
   useEffect(() => {
     console.error('Error en la aplicación:', error);
   }, [error]);
+
+  const friendlyError = error?.message
+    ? translateErrorMessageEs(
+        error,
+        'Ocurrió un inconveniente inesperado al procesar esta vista.'
+      )
+    : '';
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-stone-50 px-6 py-16 text-stone-900">
@@ -28,9 +36,9 @@ export default function GlobalError({
           Ocurrió un error inesperado al cargar esta vista. Si estabas en el
           panel administrativo, intenta iniciar sesión nuevamente.
         </p>
-        {error?.message && (
-          <p className="mt-3 rounded-lg bg-stone-100 px-3 py-2 font-mono text-xs text-stone-700 break-words">
-            {error.message}
+        {friendlyError && (
+          <p className="mt-3 rounded-lg bg-stone-100 px-3 py-2 text-xs text-stone-700 break-words">
+            {friendlyError}
           </p>
         )}
         <div className="mt-6 flex flex-col gap-2.5 sm:flex-row">

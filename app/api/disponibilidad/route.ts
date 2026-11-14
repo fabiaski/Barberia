@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { checkAvailability } from '@/services/booking';
 
 export async function GET(request: NextRequest) {
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
 
     if (!barberId || !date) {
       return NextResponse.json(
-        { error: 'Los parámetros barberId y date son obligatorios.' },
+        { error: 'Los parámetros de barbero y fecha son obligatorios.' },
         { status: 400 }
       );
     }
@@ -29,10 +30,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(availability);
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible consultar la disponibilidad.';
+    const message = translateErrorMessageEs(
+      error,
+      'No fue posible consultar la disponibilidad.'
+    );
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

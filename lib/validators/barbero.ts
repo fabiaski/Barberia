@@ -9,7 +9,9 @@ import { timeToMinutes } from '@/lib/utils/timezone';
 import { AppointmentStatus } from '@/types';
 
 export const barberUpdateAppointmentStatusSchema = z.object({
-  status: z.nativeEnum(AppointmentStatus),
+  status: z.nativeEnum(AppointmentStatus, {
+    error: 'El estado de la cita no es válido.',
+  }),
 });
 
 export const barberUpdateScheduleSchema = z.object({
