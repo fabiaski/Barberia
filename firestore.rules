@@ -119,7 +119,7 @@ service cloud.firestore {
           'id', 'clientId', 'clientName', 'clientPhone', 'clientEmail',
           'barberId', 'barberUid', 'barberName', 'serviceId', 'serviceName',
           'priceCop', 'durationMinutes', 'date', 'startTime', 'endTime',
-          'status', 'notes', 'createdAt', 'updatedAt'
+          'status', 'notes', 'bookingCode', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         isValidId(data.clientId) &&
@@ -132,14 +132,25 @@ service cloud.firestore {
         isValidId(data.serviceId) &&
         data.serviceName is string && data.serviceName.size() >= 2 && data.serviceName.size() <= 100 &&
         data.priceCop is number && data.priceCop > 0 &&
-        data.durationMinutes is number && data.durationMinutes >= 15 && data.durationMinutes <= 360 &&
+        data.durationMinutes is number && data.durationMinutes >= 10 && data.durationMinutes <= 360 &&
         data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
         data.startTime is string && data.startTime.size() == 5 && data.startTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$') &&
         data.endTime is string && data.endTime.size() == 5 && data.endTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$') &&
         data.status in ['confirmada', 'en_proceso', 'finalizada', 'cancelada', 'no_asistio'] &&
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('bookingCode' in data) || (data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 24 && data.bookingCode.matches('^[A-Z0-9-]+$'))) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidOcupacion(data) {
+      return data.keys().hasAll(['barberId', 'date', 'slotTime', 'appointmentId', 'createdAt']) &&
+        data.keys().hasOnly(['barberId', 'date', 'slotTime', 'appointmentId', 'createdAt']) &&
+        isValidId(data.barberId) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.slotTime is string && data.slotTime.size() == 5 && data.slotTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$') &&
+        isValidId(data.appointmentId) &&
+        data.createdAt is timestamp;
     }
 
     function isValidHorario(data) {
@@ -350,11 +361,23 @@ service cloud.firestore {
       );
     }
 
-    // --- 8. Colección ocupacion (Solo escritura transaccional en servidor Admin SDK) ---
+    // --- 8. Colección ocupacion (Bloques de 5 min para reservas atómicas sin colisiones) ---
     match /ocupacion/{slotKey} {
       allow get: if isValidId(slotKey) && (isAdmin() || isBarber());
       allow list: if isBootstrappedAdmin();
-      allow create, update, delete: if false;
+      allow create: if isValidId(slotKey) && isAdmin() && isValidOcupacion(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(slotKey) && (
+        isAdmin() ||
+        (
+          isBarber() && (
+            !exists(/databases/$(database)/documents/ocupacion/$(slotKey)) ||
+            existing().barberId ==
+              get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.barberId
+          )
+        )
+      );
     }
 
     // --- 9. Colección configuracion ---

@@ -82,6 +82,7 @@ export interface Appointment {
   endTime: string; // HH:mm en America/Bogota
   status: AppointmentStatus;
   notes?: string;
+  bookingCode?: string;
   createdAt: string;
   updatedAt: string;
 }

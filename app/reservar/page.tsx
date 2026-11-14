@@ -7,6 +7,7 @@ interface ReservarPageProps {
   searchParams: Promise<{
     servicio?: string;
     barbero?: string;
+    gestionar?: string;
   }>;
 }
 
@@ -21,6 +22,7 @@ export default async function ReservarPage({ searchParams }: ReservarPageProps) 
       catalog={catalog}
       initialServiceId={params.servicio}
       initialBarberId={params.barbero}
+      initialMode={params.gestionar === '1' ? 'manage' : 'book'}
     />
   );
 }

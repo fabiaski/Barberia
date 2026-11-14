@@ -9,6 +9,8 @@ export async function GET(request: NextRequest) {
     const serviceId = searchParams.get('serviceId') ?? undefined;
     const durationParam = searchParams.get('durationMinutes');
     const durationMinutes = durationParam ? Number(durationParam) : undefined;
+    const excludeAppointmentId =
+      searchParams.get('excludeAppointmentId') ?? undefined;
 
     if (!barberId || !date) {
       return NextResponse.json(
@@ -22,6 +24,7 @@ export async function GET(request: NextRequest) {
       date,
       serviceId,
       durationMinutes,
+      excludeAppointmentId,
     });
 
     return NextResponse.json(availability);

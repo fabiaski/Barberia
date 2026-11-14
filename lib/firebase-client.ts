@@ -20,29 +20,49 @@ import firebaseAppletConfig from '@/firebase-applet-config.json';
  * Lee las variables públicas NEXT_PUBLIC_FIREBASE_* definidas en .env.example
  * y utiliza firebase-applet-config.json como respaldo automático en AI Studio.
  */
+function cleanEnvValue(value: string | undefined, fallback?: string): string {
+  const candidate = (value || fallback || '').trim();
+  if (
+    (candidate.startsWith('"') && candidate.endsWith('"')) ||
+    (candidate.startsWith("'") && candidate.endsWith("'"))
+  ) {
+    return candidate.slice(1, -1).trim();
+  }
+  return candidate;
+}
+
 const firebaseClientConfig: FirebaseOptions = {
-  apiKey:
-    process.env.NEXT_PUBLIC_FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
-  authDomain:
-    process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ||
-    firebaseAppletConfig.authDomain,
-  projectId:
-    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
-    firebaseAppletConfig.projectId,
-  storageBucket:
-    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ||
-    firebaseAppletConfig.storageBucket,
-  messagingSenderId:
-    process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ||
-    firebaseAppletConfig.messagingSenderId,
-  appId:
-    process.env.NEXT_PUBLIC_FIREBASE_APP_ID || firebaseAppletConfig.appId,
+  apiKey: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+    firebaseAppletConfig.apiKey
+  ),
+  authDomain: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    firebaseAppletConfig.authDomain
+  ),
+  projectId: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+    firebaseAppletConfig.projectId
+  ),
+  storageBucket: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+    firebaseAppletConfig.storageBucket
+  ),
+  messagingSenderId: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+    firebaseAppletConfig.messagingSenderId
+  ),
+  appId: cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+    firebaseAppletConfig.appId
+  ),
 };
 
 const firestoreDatabaseId =
-  process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ||
-  firebaseAppletConfig.firestoreDatabaseId ||
-  undefined;
+  cleanEnvValue(
+    process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID,
+    firebaseAppletConfig.firestoreDatabaseId
+  ) || undefined;
 
 function validateClientConfig(config: FirebaseOptions): void {
   const missing: string[] = [];
@@ -71,7 +91,10 @@ export const auth: Auth = getAuth(firebaseApp);
 export const db: Firestore = firestoreDatabaseId
   ? getFirestore(firebaseApp, firestoreDatabaseId)
   : getFirestore(firebaseApp);
-export const storage: FirebaseStorage = getStorage(firebaseApp);
+
+export function getClientStorage(): FirebaseStorage {
+  return getStorage(firebaseApp);
+}
 
 let connectionChecked = false;
 

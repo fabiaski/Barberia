@@ -274,6 +274,12 @@
           "type": "string",
           "maxLength": 500
         },
+        "bookingCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -394,7 +400,7 @@
     },
     "Ocupacion": {
       "title": "Bloque de ocupación",
-      "description": "Candado atómico de 15 minutos por barbero y fecha para evitar reservas simultáneas.",
+      "description": "Candado atómico de 5 minutos por barbero y fecha para evitar reservas simultáneas.",
       "type": "object",
       "properties": {
         "barberId": {
@@ -538,7 +544,7 @@
     },
     "/ocupacion/{slotKey}": {
       "schema": { "$ref": "#/entities/Ocupacion" },
-      "description": "Slots de 15 minutos ocupados para transacciones atómicas sin colisiones."
+      "description": "Slots de 5 minutos ocupados para transacciones atómicas sin colisiones."
     },
     "/configuracion/{configId}": {
       "schema": { "$ref": "#/entities/Configuracion" },

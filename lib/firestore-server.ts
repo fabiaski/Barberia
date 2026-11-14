@@ -33,6 +33,7 @@ export type ServerBatchOperation =
       docId: string;
       data: Record<string, unknown>;
       merge?: boolean;
+      preconditionExists?: boolean;
       serverTimestampFields?: string[];
     }
   | {
@@ -261,6 +262,8 @@ function buildRestWriteOperation(op: ServerBatchOperation): Record<string, unkno
 
   if (op.type === 'update') {
     writeObj.currentDocument = { exists: true };
+  } else if (typeof op.preconditionExists === 'boolean') {
+    writeObj.currentDocument = { exists: op.preconditionExists };
   }
 
   if (serverTimestampFields.length > 0) {
@@ -425,6 +428,11 @@ export async function serverCommitWrites(
         batch.delete(ref);
       } else if (op.type === 'update') {
         batch.update(
+          ref,
+          normalizeAdminData(op.data, op.serverTimestampFields)
+        );
+      } else if (op.preconditionExists === false) {
+        batch.create(
           ref,
           normalizeAdminData(op.data, op.serverTimestampFields)
         );

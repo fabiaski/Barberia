@@ -68,24 +68,50 @@ export async function PATCH(request: NextRequest) {
       },
     ];
 
-    // Si hay Service Account y se cancela o el cliente no asistió, liberar los bloqueos de ocupación
+    // Si se cancela o el cliente no asistió, liberar los bloqueos de ocupación
     if (
-      hasAdminServiceAccount() &&
-      (status === AppointmentStatus.CANCELLED ||
-        status === AppointmentStatus.NO_SHOW)
+      status === AppointmentStatus.CANCELLED ||
+      status === AppointmentStatus.NO_SHOW
     ) {
-      const occupancyDocs = await serverQueryCollection(
-        'ocupacion',
-        {
-          filters: [{ field: 'appointmentId', op: '==', value: appointmentId }],
-        },
-        authResult.idToken
-      );
-      for (const occDoc of occupancyDocs) {
+      const { buildOccupancySlotKeys } = await import('@/services/booking');
+      const apptData = apptSnap.data ?? {};
+      const deleteIds = new Set<string>();
+
+      if (
+        apptData.barberId &&
+        apptData.date &&
+        apptData.startTime &&
+        apptData.durationMinutes
+      ) {
+        const deterministic = buildOccupancySlotKeys(
+          String(apptData.barberId),
+          String(apptData.date),
+          String(apptData.startTime),
+          Number(apptData.durationMinutes)
+        );
+        for (const s of deterministic) {
+          deleteIds.add(s.slotKey);
+        }
+      }
+
+      if (hasAdminServiceAccount()) {
+        const occupancyDocs = await serverQueryCollection(
+          'ocupacion',
+          {
+            filters: [{ field: 'appointmentId', op: '==', value: appointmentId }],
+          },
+          authResult.idToken
+        );
+        for (const occDoc of occupancyDocs) {
+          deleteIds.add(occDoc.id);
+        }
+      }
+
+      for (const docId of deleteIds) {
         ops.push({
           type: 'delete',
           collection: 'ocupacion',
-          docId: occDoc.id,
+          docId,
         });
       }
     }

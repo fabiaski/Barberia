@@ -107,6 +107,14 @@ export function InfoFooter({ config, scheduleDays }: InfoFooterProps) {
               <p>© {new Date().getFullYear()} {config.name}</p>
               <p className="mt-1.5">
                 <Link
+                  href="/reservar?gestionar=1"
+                  className="font-medium text-stone-700 underline decoration-stone-300 underline-offset-4 transition-colors hover:text-stone-900 hover:decoration-stone-900"
+                >
+                  Consultar o cancelar reserva
+                </Link>
+              </p>
+              <p className="mt-1.5">
+                <Link
                   href="/login"
                   className="font-medium text-stone-700 underline decoration-stone-300 underline-offset-4 transition-colors hover:text-stone-900 hover:decoration-stone-900"
                 >

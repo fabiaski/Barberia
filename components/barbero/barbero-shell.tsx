@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Calendar,
+  CalendarOff,
   Clock,
   ExternalLink,
   LogOut,
@@ -55,7 +56,7 @@ export function BarberoShell({ session, children }: BarberoShellProps) {
               className="flex min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-100 hover:text-stone-900"
             >
               <Calendar className="h-4 w-4 shrink-0 text-stone-500" aria-hidden="true" />
-              <span className="truncate">Agenda del día</span>
+              <span className="truncate">Agenda y citas</span>
             </a>
 
             <a
@@ -64,6 +65,14 @@ export function BarberoShell({ session, children }: BarberoShellProps) {
             >
               <Clock className="h-4 w-4 shrink-0 text-stone-500" aria-hidden="true" />
               <span className="truncate">Mi horario</span>
+            </a>
+
+            <a
+              href="#bloqueos-personales"
+              className="flex min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-stone-700 transition-colors hover:bg-stone-100 hover:text-stone-900"
+            >
+              <CalendarOff className="h-4 w-4 shrink-0 text-stone-500" aria-hidden="true" />
+              <span className="truncate">Mis bloqueos</span>
             </a>
 
             {session.role === UserRole.ADMIN && (
