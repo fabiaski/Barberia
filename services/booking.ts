@@ -582,8 +582,8 @@ export async function checkAvailability(
     const data = doc.data ?? {};
     const blockBarberId = String(data.barberId ?? '');
     const allDay = Boolean(data.allDay);
-    const blockStart = allDay ? DEFAULT_OPEN_TIME : String(data.startTime ?? '');
-    const blockEnd = allDay ? DEFAULT_CLOSE_TIME : String(data.endTime ?? '');
+    const blockStart = allDay ? '00:00' : String(data.startTime ?? '');
+    const blockEnd = allDay ? '23:59' : String(data.endTime ?? '');
 
     if (!blockStart || !blockEnd) continue;
 
@@ -688,6 +688,7 @@ export async function checkAvailability(
     .map((s) => s.startTime);
 
   const allBusyIntervals = Array.from(busyByBarber.values()).flat();
+  const hasAnyBlock = allBusyIntervals.some((b) => b.source === 'bloqueo');
 
   return {
     barberId,
@@ -706,7 +707,11 @@ export async function checkAvailability(
     reason: !anyBarberOpen
       ? 'No hay atención programada para esta fecha.'
       : sortedSlotTimes.length === 0
-        ? 'No quedan horarios disponibles para la duración de este servicio en la fecha elegida.'
+        ? hasAnyBlock
+          ? barberId === 'any'
+            ? 'No hay turnos disponibles en esta fecha por bloqueos en la agenda.'
+            : 'El barbero tiene bloqueado este horario o día completo en la fecha elegida.'
+          : 'No quedan horarios disponibles para la duración de este servicio en la fecha elegida.'
         : undefined,
   };
 }
@@ -856,10 +861,10 @@ export async function createAtomicBooking(
         const d = doc.data();
         const bId = String(d.barberId ?? '');
         const bStart = d.allDay
-          ? timeToMinutes(DEFAULT_OPEN_TIME)
+          ? timeToMinutes('00:00')
           : timeToMinutes(String(d.startTime));
         const bEnd = d.allDay
-          ? timeToMinutes(DEFAULT_CLOSE_TIME)
+          ? timeToMinutes('23:59')
           : timeToMinutes(String(d.endTime));
         const list = blocksByBarber.get(bId) ?? [];
         list.push({ start: bStart, end: bEnd });
@@ -1476,10 +1481,10 @@ export async function reschedulePublicBooking(
         const d = bDoc.data();
         const bId = String(d.barberId ?? '');
         const bStart = d.allDay
-          ? timeToMinutes(DEFAULT_OPEN_TIME)
+          ? timeToMinutes('00:00')
           : timeToMinutes(String(d.startTime));
         const bEnd = d.allDay
-          ? timeToMinutes(DEFAULT_CLOSE_TIME)
+          ? timeToMinutes('23:59')
           : timeToMinutes(String(d.endTime));
         const list = blocksByBarber.get(bId) ?? [];
         list.push({ start: bStart, end: bEnd });

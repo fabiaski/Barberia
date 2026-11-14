@@ -33,6 +33,7 @@ export interface BarberWorkspaceSummary {
 }
 
 export interface BarberWorkspaceData {
+  shopName: string;
   barber: Barber;
   availableBarbers: Array<{ id: string; name: string; active: boolean }>;
   date: string;
@@ -205,46 +206,57 @@ export async function getBarberWorkspaceData(params: {
 
   const isBarberRole = session.role === UserRole.BARBER;
 
-  const [appointmentsDocs, personalBlocksDocs, globalBlocksDocs, barberScheduleSnap, generalScheduleSnap] =
-    await Promise.all([
-      serverQueryCollection(
-        'citas',
-        {
-          filters: [
-            isBarberRole
-              ? { field: 'barberUid', op: '==', value: session.uid }
-              : { field: 'barberId', op: '==', value: barber.id },
-          ],
-        },
-        idToken
-      ).catch(() => []),
-      serverQueryCollection(
-        'bloqueos',
-        {
-          filters: [
-            isBarberRole
-              ? { field: 'barberUid', op: '==', value: session.uid }
-              : { field: 'barberId', op: '==', value: barber.id },
-          ],
-        },
-        idToken
-      ).catch(() => []),
-      serverQueryCollection(
-        'bloqueos',
-        { filters: [{ field: 'barberId', op: '==', value: 'all' }] },
-        idToken
-      ).catch(() => []),
-      serverGetDoc('horarios', barber.id, idToken).catch(() => ({
-        id: barber.id,
-        exists: false,
-        data: undefined,
-      })),
-      serverGetDoc('horarios', 'general', idToken).catch(() => ({
-        id: 'general',
-        exists: false,
-        data: undefined,
-      })),
-    ]);
+  const [
+    appointmentsDocs,
+    personalBlocksDocs,
+    globalBlocksDocs,
+    barberScheduleSnap,
+    generalScheduleSnap,
+    shopConfigSnap,
+  ] = await Promise.all([
+    serverQueryCollection(
+      'citas',
+      {
+        filters: [
+          isBarberRole
+            ? { field: 'barberUid', op: '==', value: session.uid }
+            : { field: 'barberId', op: '==', value: barber.id },
+        ],
+      },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'bloqueos',
+      {
+        filters: [
+          isBarberRole
+            ? { field: 'barberUid', op: '==', value: session.uid }
+            : { field: 'barberId', op: '==', value: barber.id },
+        ],
+      },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'bloqueos',
+      { filters: [{ field: 'barberId', op: '==', value: 'all' }] },
+      idToken
+    ).catch(() => []),
+    serverGetDoc('horarios', barber.id, idToken).catch(() => ({
+      id: barber.id,
+      exists: false,
+      data: undefined,
+    })),
+    serverGetDoc('horarios', 'general', idToken).catch(() => ({
+      id: 'general',
+      exists: false,
+      data: undefined,
+    })),
+    serverGetDoc('configuracion', 'main', idToken).catch(() => ({
+      id: 'main',
+      exists: false,
+      data: undefined,
+    })),
+  ]);
 
   const appointments: Appointment[] = appointmentsDocs
     .map((doc) => {
@@ -337,7 +349,13 @@ export async function getBarberWorkspaceData(params: {
     ? (barberScheduleSnap.data!.days as DaySchedule[])
     : generalDays;
 
+  const shopName =
+    shopConfigSnap.exists && shopConfigSnap.data?.name
+      ? String(shopConfigSnap.data.name)
+      : 'Barbería Estudio';
+
   return {
+    shopName,
     barber,
     availableBarbers,
     date,

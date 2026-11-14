@@ -109,6 +109,16 @@ test('Middleware y guardas RBAC protegen rutas privadas y APIs sin sesión', asy
     body: JSON.stringify({ status: 'cancelada' }),
   });
   assert.equal(barberPatchRes.status, 401);
+
+  const resetBarberAuthRes = await fetchStatus(
+    '/api/admin/barberos/restablecer-acceso',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'barbero@correo.com' }),
+    }
+  );
+  assert.equal(resetBarberAuthRes.status, 401);
 });
 
 test('API de disponibilidad valida parámetros, fechas pasadas y franjas abiertas', async () => {

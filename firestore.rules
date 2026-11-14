@@ -305,7 +305,7 @@ service cloud.firestore {
 
     // --- 6. Colección horarios ---
     match /horarios/{scheduleId} {
-      allow get: if isValidId(scheduleId) && (existing().isPublic == true || isAdmin() || isBarber());
+      allow get: if isValidId(scheduleId) && (existing().isPublic == true || existing().days is list || isAdmin() || isBarber());
       allow list: if existing().isPublic == true || isBootstrappedAdmin();
       allow create: if isValidId(scheduleId) && isValidHorario(incoming()) &&
         incoming().id == scheduleId &&
@@ -336,8 +336,8 @@ service cloud.firestore {
 
     // --- 7. Colección bloqueos ---
     match /bloqueos/{blockId} {
-      allow get: if isValidId(blockId) && (isAdmin() || isBarber());
-      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().barberUid == request.auth.uid || existing().barberId == 'all');
+      allow get: if isValidId(blockId) && ((existing().date is string && existing().date.size() == 10) || isAdmin() || isBarber());
+      allow list: if resource.data.date is string && resource.data.date.size() == 10;
       allow create: if isValidId(blockId) && isValidBloqueo(incoming()) &&
         incoming().id == blockId &&
         incoming().createdBy == request.auth.uid &&

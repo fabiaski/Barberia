@@ -8,6 +8,7 @@ import {
   CalendarOff,
   CheckCircle2,
   Clock,
+  MessageCircle,
   Phone,
   Play,
   Plus,
@@ -27,6 +28,7 @@ import {
   translateErrorMessageEs,
 } from '@/lib/utils/error-es';
 import { formatCurrencyCOP, formatTime12h } from '@/lib/utils/timezone';
+import { buildAppointmentWhatsAppUrl } from '@/lib/utils/whatsapp';
 import type { BarberAgendaRange, BarberWorkspaceData } from '@/services/barbero';
 import { AppointmentStatus, type DaySchedule } from '@/types';
 
@@ -595,6 +597,15 @@ export function BarberWorkspaceClient({
                 const locked = isTerminal(appt.status);
                 const pendingConfirm =
                   confirmAction?.appointmentId === appt.id ? confirmAction : null;
+                const whatsappUrl = buildAppointmentWhatsAppUrl({
+                  clientPhone: appt.clientPhone,
+                  clientName: appt.clientName,
+                  barberName: workspace.barber.name,
+                  serviceName: appt.serviceName,
+                  date: appt.date,
+                  startTime: appt.startTime,
+                  shopName: workspace.shopName,
+                });
 
                 return (
                   <article
@@ -653,6 +664,22 @@ export function BarberWorkspaceClient({
 
                     {!locked && (
                       <div className="mt-4 flex flex-wrap gap-2 border-t border-stone-200 pt-3">
+                        {whatsappUrl && (
+                          <a
+                            href={whatsappUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Abrir WhatsApp con mensaje de confirmación de asistencia"
+                            className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-100"
+                          >
+                            <MessageCircle
+                              className="h-4 w-4 shrink-0 text-emerald-700"
+                              aria-hidden="true"
+                            />
+                            <span>Confirmar asistencia por WhatsApp</span>
+                          </a>
+                        )}
+
                         {appt.status === AppointmentStatus.CONFIRMED && (
                           <button
                             type="button"
@@ -768,6 +795,15 @@ export function BarberWorkspaceClient({
                       confirmAction?.appointmentId === appt.id
                         ? confirmAction
                         : null;
+                    const whatsappUrl = buildAppointmentWhatsAppUrl({
+                      clientPhone: appt.clientPhone,
+                      clientName: appt.clientName,
+                      barberName: workspace.barber.name,
+                      serviceName: appt.serviceName,
+                      date: appt.date,
+                      startTime: appt.startTime,
+                      shopName: workspace.shopName,
+                    });
 
                     return (
                       <tr key={appt.id} className="align-top hover:bg-stone-50/70">
@@ -860,6 +896,22 @@ export function BarberWorkspaceClient({
                             </div>
                           ) : (
                             <div className="inline-flex flex-wrap justify-end gap-1.5">
+                              {whatsappUrl && (
+                                <a
+                                  href={whatsappUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Escribir por WhatsApp para confirmar si asistirá a la cita"
+                                  className="inline-flex min-h-[34px] items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-100"
+                                >
+                                  <MessageCircle
+                                    className="h-3.5 w-3.5 text-emerald-700"
+                                    aria-hidden="true"
+                                  />
+                                  <span>WhatsApp</span>
+                                </a>
+                              )}
+
                               {appt.status === AppointmentStatus.CONFIRMED && (
                                 <button
                                   type="button"

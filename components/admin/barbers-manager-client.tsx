@@ -5,6 +5,7 @@ import Image from 'next/image';
 import {
   CheckCircle2,
   Loader2,
+  Mail,
   Pencil,
   Plus,
   Trash2,
@@ -46,6 +47,9 @@ export function BarbersManagerClient({
   const [active, setActive] = useState(true);
 
   const [saving, setSaving] = useState(false);
+  const [sendingReset, setSendingReset] = useState(false);
+  const [canSendReset, setCanSendReset] = useState(false);
+  const [resetSentMsg, setResetSentMsg] = useState('');
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -72,6 +76,8 @@ export function BarbersManagerClient({
     setPhotoUrl('/images/barber_sebastian.jpg');
     setActive(true);
     setError('');
+    setCanSendReset(false);
+    setResetSentMsg('');
     setMessage('');
   };
 
@@ -87,6 +93,8 @@ export function BarbersManagerClient({
     setPhotoUrl(barber.photoUrl || '/images/barber_mateo.jpg');
     setActive(barber.active);
     setError('');
+    setCanSendReset(false);
+    setResetSentMsg('');
     setMessage('');
   };
 
@@ -94,12 +102,55 @@ export function BarbersManagerClient({
     setIsCreating(false);
     setEditingBarber(null);
     setError('');
+    setCanSendReset(false);
+    setResetSentMsg('');
+  };
+
+  const handleSendResetEmail = async () => {
+    if (!email.trim()) return;
+    setSendingReset(true);
+    setResetSentMsg('');
+    try {
+      const res = await fetch('/api/admin/barberos/restablecer-acceso', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data =
+        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
+          res
+        )) ?? {};
+      if (!res.ok) {
+        throw new Error(
+          translateErrorMessageEs(
+            data.error,
+            'No fue posible enviar el enlace de restablecimiento.'
+          )
+        );
+      }
+      setResetSentMsg(
+        data.message ||
+          'Enlace enviado. Revisa el correo para asignar una nueva contraseña.'
+      );
+    } catch (err) {
+      setError(
+        translateErrorMessageEs(
+          err,
+          'No fue posible enviar el correo de recuperación.'
+        )
+      );
+    } finally {
+      setSendingReset(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError('');
+    setCanSendReset(false);
+    setResetSentMsg('');
     setMessage('');
 
     try {
@@ -120,10 +171,13 @@ export function BarbersManagerClient({
           }),
         });
         const data =
-          (await parseJsonResponseSafe<{ message?: string; error?: string }>(
-            res
-          )) ?? {};
+          (await parseJsonResponseSafe<{
+            message?: string;
+            error?: string;
+            canSendReset?: boolean;
+          }>(res)) ?? {};
         if (!res.ok) {
+          setCanSendReset(Boolean(data.canSendReset));
           throw new Error(
             translateErrorMessageEs(data.error, 'Error al crear el barbero.')
           );
@@ -321,9 +375,31 @@ export function BarbersManagerClient({
           </div>
 
           {error && (
-            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-              {error}
-            </p>
+            <div className="mt-4 space-y-2.5 rounded-lg border border-red-200 bg-red-50 px-3.5 py-3 text-xs text-red-800">
+              <p>{error}</p>
+              {canSendReset && isCreating && email.trim() && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={sendingReset}
+                    onClick={handleSendResetEmail}
+                    className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md border border-red-300 bg-white px-3 py-1 text-xs font-semibold text-red-900 hover:bg-red-100 disabled:opacity-60"
+                  >
+                    <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>
+                      {sendingReset
+                        ? 'Enviando enlace...'
+                        : `Enviar enlace de restablecimiento a ${email.trim()}`}
+                    </span>
+                  </button>
+                </div>
+              )}
+              {resetSentMsg && (
+                <p className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-emerald-900">
+                  {resetSentMsg}
+                </p>
+              )}
+            </div>
           )}
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2">

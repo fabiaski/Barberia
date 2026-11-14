@@ -148,58 +148,6 @@ export function BookingWizard({
 
   const availabilityRequestKey = `${selectedBarberId}|${selectedDate}|${selectedServiceId}|${availabilityRefreshNonce}`;
 
-  useEffect(() => {
-    if (
-      mode !== 'book' ||
-      step !== 2 ||
-      !selectedDate ||
-      !selectedServiceId ||
-      !selectedBarberId
-    ) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const params = new URLSearchParams({
-      barberId: selectedBarberId,
-      date: selectedDate,
-      serviceId: selectedServiceId,
-    });
-
-    fetch(`/api/disponibilidad?${params.toString()}`, {
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        if (!res.ok) return null;
-        return (await res.json()) as {
-          availableSlots?: string[];
-          reason?: string;
-        };
-      })
-      .then((data) => {
-        if (!data || !Array.isArray(data.availableSlots)) return;
-        setLiveAvailability({
-          requestKey: availabilityRequestKey,
-          availableSlots: data.availableSlots,
-          reason: data.reason,
-        });
-      })
-      .catch(() => {
-        // Si falla la red, se conserva el cálculo base del horario general
-      });
-
-    return () => {
-      controller.abort();
-    };
-  }, [
-    mode,
-    step,
-    selectedDate,
-    selectedServiceId,
-    selectedBarberId,
-    availabilityRequestKey,
-  ]);
-
   const fallbackSlots = useMemo(() => {
     if (!selectedDate || !activeService || barbers.length === 0) return [];
     const dayObj = schedule.days.find(
@@ -220,12 +168,83 @@ export function BookingWizard({
     config.slotIntervalMinutes,
   ]);
 
+  const isLoadingAvailability =
+    mode === 'book' &&
+    step === 2 &&
+    barbers.length > 0 &&
+    Boolean(selectedDate && selectedServiceId && selectedBarberId) &&
+    liveAvailability?.requestKey !== availabilityRequestKey;
+
+  useEffect(() => {
+    if (
+      mode !== 'book' ||
+      step !== 2 ||
+      !selectedDate ||
+      !selectedServiceId ||
+      !selectedBarberId
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      barberId: selectedBarberId,
+      date: selectedDate,
+      serviceId: selectedServiceId,
+    });
+
+    fetch(`/api/disponibilidad?${params.toString()}`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+      .then(async (res) => {
+        if (!res.ok) return null;
+        return (await res.json()) as {
+          availableSlots?: string[];
+          reason?: string;
+        };
+      })
+      .then((data) => {
+        if (data && Array.isArray(data.availableSlots)) {
+          setLiveAvailability({
+            requestKey: availabilityRequestKey,
+            availableSlots: data.availableSlots,
+            reason: data.reason,
+          });
+          return;
+        }
+        setLiveAvailability({
+          requestKey: availabilityRequestKey,
+          availableSlots: fallbackSlots,
+        });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setLiveAvailability({
+          requestKey: availabilityRequestKey,
+          availableSlots: fallbackSlots,
+        });
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [
+    mode,
+    step,
+    selectedDate,
+    selectedServiceId,
+    selectedBarberId,
+    availabilityRequestKey,
+    fallbackSlots,
+  ]);
+
   const availableSlots = useMemo(() => {
     if (liveAvailability?.requestKey === availabilityRequestKey) {
       return liveAvailability.availableSlots;
     }
-    return fallbackSlots;
-  }, [liveAvailability, availabilityRequestKey, fallbackSlots]);
+    return [];
+  }, [liveAvailability, availabilityRequestKey]);
 
   const morningSlots = useMemo(
     () => availableSlots.filter((slot) => timeToMinutes(slot) < 12 * 60),
@@ -1040,10 +1059,22 @@ export function BookingWizard({
                         </span>
                       </div>
 
-                      {displayedSlots.length === 0 ? (
+                      {isLoadingAvailability ? (
+                        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-stone-800 bg-stone-900/60 px-4 py-6 text-sm text-stone-400">
+                          <Loader2
+                            className="h-4 w-4 animate-spin text-amber-500"
+                            aria-hidden="true"
+                          />
+                          <span>Consultando horarios disponibles...</span>
+                        </div>
+                      ) : displayedSlots.length === 0 ? (
                         <p className="mt-4 rounded-xl border border-stone-800 bg-stone-900/60 px-4 py-4 text-center text-sm text-stone-400">
-                          Sin horas para reservar en esta jornada. Selecciona la
-                          otra pestaña o cambia el día.
+                          {availableSlots.length === 0 &&
+                          liveAvailability?.requestKey ===
+                            availabilityRequestKey &&
+                          liveAvailability.reason
+                            ? liveAvailability.reason
+                            : 'Sin horas para reservar en esta jornada. Selecciona la otra pestaña o cambia el día.'}
                         </p>
                       ) : (
                         <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-5">

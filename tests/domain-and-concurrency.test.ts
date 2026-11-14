@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import {
   createBookingManageToken,
@@ -6,6 +8,11 @@ import {
 } from '@/lib/auth/manage-token';
 import { generateScheduleTimeSlots } from '@/lib/utils/schedule-slots';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
+import {
+  buildAppointmentWhatsAppUrl,
+  buildAttendanceConfirmationMessage,
+  normalizeWhatsAppPhone,
+} from '@/lib/utils/whatsapp';
 import {
   formatCurrencyCOP,
   formatTime12h,
@@ -436,3 +443,60 @@ test('Traductor de errores translateErrorMessageEs convierte mensajes técnicos 
     'Ese horario ya no está disponible para el barbero seleccionado.'
   );
 });
+
+test('Utilidad WhatsApp normaliza teléfonos colombianos y genera enlace wa.me con mensaje de confirmación', () => {
+  assert.equal(normalizeWhatsAppPhone('310 458 9210'), '573104589210');
+  assert.equal(normalizeWhatsAppPhone('+57 315-789-0123'), '573157890123');
+  assert.equal(normalizeWhatsAppPhone('0057 3001112233'), '573001112233');
+  assert.equal(normalizeWhatsAppPhone('123'), null);
+
+  const msg = buildAttendanceConfirmationMessage({
+    clientName: 'Camilo Torres',
+    barberName: 'Mateo',
+    serviceName: 'Corte y barba',
+    date: '2026-11-14',
+    startTime: '14:30',
+    shopName: 'Barbería Estudio',
+  });
+  assert.match(msg, /Hola Camilo Torres/);
+  assert.match(msg, /Mateo de Barbería Estudio/);
+  assert.match(msg, /confirmar si asistirás/);
+  assert.match(msg, /2:30 PM/);
+
+  const url = buildAppointmentWhatsAppUrl({
+    clientPhone: '3104589210',
+    clientName: 'Camilo Torres',
+    barberName: 'Mateo',
+    serviceName: 'Corte y barba',
+    date: '2026-11-14',
+    startTime: '14:30',
+  });
+  assert.ok(url?.startsWith('https://wa.me/573104589210?text='));
+  assert.equal(
+    buildAppointmentWhatsAppUrl({
+      clientPhone: '12',
+      clientName: 'Camilo',
+      barberName: 'Mateo',
+      serviceName: 'Barba',
+      date: '2026-11-14',
+      startTime: '10:00',
+    }),
+    null
+  );
+});
+
+test('Reglas de Firestore permiten lectura pública de bloqueos por fecha y horarios personalizados por barbero', () => {
+  const rulesText = fs.readFileSync(
+    path.join(process.cwd(), 'firestore.rules'),
+    'utf8'
+  );
+  assert.match(
+    rulesText,
+    /match \/horarios\/\{scheduleId\}[\s\S]*?existing\(\)\.days is list/
+  );
+  assert.match(
+    rulesText,
+    /match \/bloqueos\/\{blockId\}[\s\S]*?allow list:\s*if resource\.data\.date is string && resource\.data\.date\.size\(\) == 10;/
+  );
+});
+
