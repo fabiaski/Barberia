@@ -27,7 +27,11 @@ import {
   parseJsonResponseSafe,
   translateErrorMessageEs,
 } from '@/lib/utils/error-es';
-import { formatCurrencyCOP, formatTime12h } from '@/lib/utils/timezone';
+import {
+  formatCurrencyCOP,
+  formatTime12h,
+  getBogotaDateString,
+} from '@/lib/utils/timezone';
 import { buildAppointmentWhatsAppUrl } from '@/lib/utils/whatsapp';
 import type { BarberAgendaRange, BarberWorkspaceData } from '@/services/barbero';
 import { AppointmentStatus, type DaySchedule } from '@/types';
@@ -81,14 +85,22 @@ export function BarberWorkspaceClient({
     null
   );
 
+  const todayBogota = getBogotaDateString(new Date());
+
   // Formulario de bloqueo personal
-  const [blockDate, setBlockDate] = useState(initialData.date);
+  const [blockDate, setBlockDate] = useState(
+    initialData.date >= todayBogota ? initialData.date : todayBogota
+  );
   const [blockAllDay, setBlockAllDay] = useState(false);
   const [blockStartTime, setBlockStartTime] = useState('12:00');
   const [blockEndTime, setBlockEndTime] = useState('13:00');
   const [blockReason, setBlockReason] = useState('');
 
   const [feedback, setFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [blockFeedback, setBlockFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
   } | null>(null);
@@ -156,9 +168,11 @@ export function BarberWorkspaceClient({
         body: JSON.stringify({ status }),
       });
       const payload =
-        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
-          res
-        )) ?? {};
+        (await parseJsonResponseSafe<{
+          message?: string;
+          error?: string;
+          emailNotification?: { sent?: boolean; clientSent?: boolean };
+        }>(res)) ?? {};
       if (!res.ok) {
         throw new Error(
           translateErrorMessageEs(
@@ -167,10 +181,15 @@ export function BarberWorkspaceClient({
           )
         );
       }
+      const clientNotified =
+        status === AppointmentStatus.CANCELLED &&
+        Boolean(payload.emailNotification?.clientSent);
       setConfirmAction(null);
       setFeedback({
         type: 'success',
-        text: payload.message || 'Estado actualizado.',
+        text: `${payload.message || 'Estado actualizado.'}${
+          clientNotified ? ' Se notificó al cliente por correo.' : ''
+        }`,
       });
       await fetchWorkspace();
     } catch (error) {
@@ -246,6 +265,7 @@ export function BarberWorkspaceClient({
     e.preventDefault();
     setCreatingBlock(true);
     setFeedback(null);
+    setBlockFeedback(null);
     try {
       const res = await fetch('/api/barbero/bloqueos', {
         method: 'POST',
@@ -260,9 +280,11 @@ export function BarberWorkspaceClient({
         }),
       });
       const payload =
-        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
-          res
-        )) ?? {};
+        (await parseJsonResponseSafe<{
+          message?: string;
+          error?: string;
+          deactivatedCount?: number;
+        }>(res)) ?? {};
       if (!res.ok) {
         throw new Error(
           translateErrorMessageEs(
@@ -272,18 +294,28 @@ export function BarberWorkspaceClient({
         );
       }
       setBlockReason('');
+      const successMessage = payload.message || 'Bloqueo personal agregado.';
       setFeedback({
         type: 'success',
-        text: payload.message || 'Bloqueo personal agregado.',
+        text: successMessage,
+      });
+      setBlockFeedback({
+        type: 'success',
+        text: successMessage,
       });
       await fetchWorkspace();
     } catch (error) {
+      const errorMessage = translateErrorMessageEs(
+        error,
+        'Error al registrar el bloqueo personal.'
+      );
       setFeedback({
         type: 'error',
-        text: translateErrorMessageEs(
-          error,
-          'Error al registrar el bloqueo personal.'
-        ),
+        text: errorMessage,
+      });
+      setBlockFeedback({
+        type: 'error',
+        text: errorMessage,
       });
     } finally {
       setCreatingBlock(false);
@@ -293,6 +325,7 @@ export function BarberWorkspaceClient({
   const handleDeleteBlock = async (blockId: string) => {
     setDeletingBlockId(blockId);
     setFeedback(null);
+    setBlockFeedback(null);
     try {
       const res = await fetch(`/api/barbero/bloqueos/${blockId}`, {
         method: 'DELETE',
@@ -310,15 +343,30 @@ export function BarberWorkspaceClient({
         );
       }
       setConfirmDeleteBlockId(null);
+      const successMessage =
+        payload.message ||
+        'Bloqueo eliminado. Los turnos de ese horario vuelven a estar disponibles si el día está abierto.';
       setFeedback({
         type: 'success',
-        text: payload.message || 'Bloqueo eliminado.',
+        text: successMessage,
+      });
+      setBlockFeedback({
+        type: 'success',
+        text: successMessage,
       });
       await fetchWorkspace();
     } catch (error) {
+      const errorMessage = translateErrorMessageEs(
+        error,
+        'Error al eliminar el bloqueo.'
+      );
       setFeedback({
         type: 'error',
-        text: translateErrorMessageEs(error, 'Error al eliminar el bloqueo.'),
+        text: errorMessage,
+      });
+      setBlockFeedback({
+        type: 'error',
+        text: errorMessage,
       });
     } finally {
       setDeletingBlockId(null);
@@ -1172,6 +1220,30 @@ export function BarberWorkspaceClient({
               Agregar nuevo bloqueo
             </h3>
 
+            {blockFeedback && (
+              <div
+                role="status"
+                className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs ${
+                  blockFeedback.type === 'success'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : 'border-rose-200 bg-rose-50 text-rose-900'
+                }`}
+              >
+                {blockFeedback.type === 'success' ? (
+                  <CheckCircle2
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <AlertCircle
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
+                <span>{blockFeedback.text}</span>
+              </div>
+            )}
+
             <div>
               <label
                 htmlFor="block-date"
@@ -1183,6 +1255,7 @@ export function BarberWorkspaceClient({
                 id="block-date"
                 type="date"
                 required
+                min={todayBogota}
                 value={blockDate}
                 onChange={(e) => setBlockDate(e.target.value)}
                 className="mt-1 min-h-[42px] w-full rounded-lg border border-stone-300 bg-white px-3 font-mono text-sm text-stone-900 focus:border-amber-700 focus:outline-none"

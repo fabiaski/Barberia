@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { checkAvailability } from '@/services/booking';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
@@ -28,7 +30,11 @@ export async function GET(request: NextRequest) {
       excludeAppointmentId,
     });
 
-    return NextResponse.json(availability);
+    return NextResponse.json(availability, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      },
+    });
   } catch (error) {
     const message = translateErrorMessageEs(
       error,

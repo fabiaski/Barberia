@@ -30,10 +30,7 @@ import {
   bookingContactFormSchema,
   type BookingContactFormInput,
 } from '@/lib/validators/booking';
-import {
-  generateScheduleTimeSlots,
-  getUpcomingBookingDates,
-} from '@/lib/utils/schedule-slots';
+import { getUpcomingBookingDates } from '@/lib/utils/schedule-slots';
 import {
   formatCurrencyCOP,
   formatTime12h,
@@ -148,32 +145,29 @@ export function BookingWizard({
 
   const availabilityRequestKey = `${selectedBarberId}|${selectedDate}|${selectedServiceId}|${availabilityRefreshNonce}`;
 
-  const fallbackSlots = useMemo(() => {
-    if (!selectedDate || !activeService || barbers.length === 0) return [];
-    const dayObj = schedule.days.find(
-      (d) => d.dayOfWeek === selectedDateMeta?.dayOfWeek
-    );
-    return generateScheduleTimeSlots({
-      date: selectedDate,
-      daySchedule: dayObj,
-      durationMinutes: activeService.durationMinutes,
-      intervalMinutes: config.slotIntervalMinutes || 30,
-    });
-  }, [
-    selectedDate,
-    activeService,
-    barbers.length,
-    schedule.days,
-    selectedDateMeta,
-    config.slotIntervalMinutes,
-  ]);
-
   const isLoadingAvailability =
     mode === 'book' &&
     step === 2 &&
     barbers.length > 0 &&
     Boolean(selectedDate && selectedServiceId && selectedBarberId) &&
     liveAvailability?.requestKey !== availabilityRequestKey;
+
+  useEffect(() => {
+    if (mode !== 'book' || step !== 2) return;
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setAvailabilityRefreshNonce((n) => n + 1);
+      }
+    };
+
+    window.addEventListener('focus', refreshIfVisible);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    return () => {
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [mode, step]);
 
   useEffect(() => {
     if (
@@ -215,14 +209,18 @@ export function BookingWizard({
         }
         setLiveAvailability({
           requestKey: availabilityRequestKey,
-          availableSlots: fallbackSlots,
+          availableSlots: [],
+          reason:
+            'No pudimos consultar los horarios en tiempo real. Intenta actualizar la vista.',
         });
       })
       .catch(() => {
         if (controller.signal.aborted) return;
         setLiveAvailability({
           requestKey: availabilityRequestKey,
-          availableSlots: fallbackSlots,
+          availableSlots: [],
+          reason:
+            'No pudimos consultar los horarios en tiempo real. Verifica tu conexión e intenta de nuevo.',
         });
       });
 
@@ -236,7 +234,6 @@ export function BookingWizard({
     selectedServiceId,
     selectedBarberId,
     availabilityRequestKey,
-    fallbackSlots,
   ]);
 
   const availableSlots = useMemo(() => {
@@ -372,7 +369,7 @@ export function BookingWizard({
       const rawText = await response.text();
       let payload: {
         summary?: PublicBookingSummary;
-        emailNotification?: { sent?: boolean };
+        emailNotification?: { sent?: boolean; clientSent?: boolean };
         error?: string;
         code?: string;
       } = {};
@@ -394,7 +391,12 @@ export function BookingWizard({
       }
 
       setConfirmedSummary(payload.summary);
-      setConfirmationEmailSent(Boolean(payload.emailNotification?.sent));
+      setConfirmationEmailSent(
+        Boolean(
+          payload.emailNotification?.clientSent ??
+            payload.emailNotification?.sent
+        )
+      );
       setAvailabilityRefreshNonce((n) => n + 1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {

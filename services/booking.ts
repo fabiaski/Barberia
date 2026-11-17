@@ -14,6 +14,10 @@ import {
   type ServerDocSnapshot,
 } from '@/lib/firestore-server';
 import {
+  intervalsOverlap,
+  resolveEffectiveDaySchedule,
+} from '@/lib/utils/schedule-blocks';
+import {
   generateScheduleTimeSlots,
   getDayOfWeekBogota,
 } from '@/lib/utils/schedule-slots';
@@ -160,57 +164,12 @@ function serializeTimestamp(value: unknown): string {
   return new Date().toISOString();
 }
 
-function clampDayScheduleToOperatingWindow(
-  daySchedule: DaySchedule
-): DaySchedule {
-  const minOpenMinutes = timeToMinutes(DEFAULT_OPEN_TIME);
-  const maxCloseMinutes = timeToMinutes(DEFAULT_CLOSE_TIME);
-
-  const openMinutes = Math.max(
-    minOpenMinutes,
-    timeToMinutes(daySchedule.openTime || DEFAULT_OPEN_TIME)
-  );
-  const closeMinutes = Math.min(
-    maxCloseMinutes,
-    timeToMinutes(daySchedule.closeTime || DEFAULT_CLOSE_TIME)
-  );
-
-  if (closeMinutes <= openMinutes) {
-    return {
-      ...daySchedule,
-      isOpen: false,
-    };
-  }
-
-  return {
-    ...daySchedule,
-    openTime: minutesToTime(openMinutes),
-    closeTime: minutesToTime(closeMinutes),
-  };
-}
-
 function getEffectiveDaySchedule(
-  dayOfWeek: number,
+  date: string,
   barberDays: DaySchedule[] | undefined,
   generalDays: DaySchedule[] | undefined
 ): DaySchedule {
-  const barberDay = barberDays?.find((d) => d.dayOfWeek === dayOfWeek);
-  const generalDay = generalDays?.find((d) => d.dayOfWeek === dayOfWeek);
-  const fallbackDay = DEFAULT_WEEK_SCHEDULE.find(
-    (d) => d.dayOfWeek === dayOfWeek
-  )!;
-
-  const chosen = barberDay ?? generalDay ?? fallbackDay;
-  return clampDayScheduleToOperatingWindow(chosen);
-}
-
-function intervalsOverlap(
-  startA: number,
-  endA: number,
-  startB: number,
-  endB: number
-): boolean {
-  return startA < endB && endA > startB;
+  return resolveEffectiveDaySchedule(date, barberDays, generalDays);
 }
 
 export function buildOccupancySlotKeys(
@@ -483,29 +442,15 @@ export async function checkAvailability(
   const [appointmentsDocs, occupancyDocs, blocksDocs, barberScheduleSnaps] =
     await Promise.all([
       safePublicQuery(() =>
-        barberId === 'any'
-          ? serverQueryCollection('citas', {
-              filters: [{ field: 'date', op: '==', value: date }],
-            })
-          : serverQueryCollection('citas', {
-              filters: [
-                { field: 'barberId', op: '==', value: barberId },
-                { field: 'date', op: '==', value: date },
-              ],
-            })
+        serverQueryCollection('citas', {
+          filters: [{ field: 'date', op: '==', value: date }],
+        })
       ),
       !hasAdminServiceAccount()
         ? safePublicQuery(() =>
-            barberId === 'any'
-              ? serverQueryCollection('ocupacion', {
-                  filters: [{ field: 'date', op: '==', value: date }],
-                })
-              : serverQueryCollection('ocupacion', {
-                  filters: [
-                    { field: 'barberId', op: '==', value: barberId },
-                    { field: 'date', op: '==', value: date },
-                  ],
-                })
+            serverQueryCollection('ocupacion', {
+              filters: [{ field: 'date', op: '==', value: date }],
+            })
           )
         : Promise.resolve([] as ServerDocSnapshot[]),
       safePublicQuery(() =>
@@ -618,7 +563,7 @@ export async function checkAvailability(
       : undefined;
 
     const daySchedule = getEffectiveDaySchedule(
-      dayOfWeek,
+      date,
       barberDays,
       generalDays
     );
@@ -1039,7 +984,32 @@ export async function createAtomicBooking(
   let bookedSummary: PublicBookingSummary | null = null;
   let lastConflict = false;
 
+  const freshDayBlocks = await safePublicQuery(() =>
+    serverQueryCollection('bloqueos', {
+      filters: [{ field: 'date', op: '==', value: input.date }],
+    })
+  );
+  const startMinRest = timeToMinutes(input.startTime);
+  const endMinRest = startMinRest + durationMinutes;
+
   for (const candidateBarberId of slotDetail.availableBarberIds) {
+    const hasFreshBlockOverlap = freshDayBlocks.some((bDoc) => {
+      const d = bDoc.data ?? {};
+      const bBarberId = String(d.barberId ?? '');
+      if (bBarberId !== 'all' && bBarberId !== candidateBarberId) return false;
+      const bStart = d.allDay
+        ? timeToMinutes('00:00')
+        : timeToMinutes(String(d.startTime ?? ''));
+      const bEnd = d.allDay
+        ? timeToMinutes('23:59')
+        : timeToMinutes(String(d.endTime ?? ''));
+      return intervalsOverlap(startMinRest, endMinRest, bStart, bEnd);
+    });
+    if (hasFreshBlockOverlap) {
+      lastConflict = true;
+      continue;
+    }
+
     const barberSnap = await serverGetDoc('barberos', candidateBarberId, idToken);
     if (!barberSnap.exists || !barberSnap.data?.active) {
       continue;
@@ -1604,7 +1574,36 @@ export async function reschedulePublicBooking(
   }
 
   // Modo vista previa sin Service Account (con idToken de administrador)
-  const chosenBarberId = slotDetail.availableBarberIds[0];
+  const freshDayBlocks = await safePublicQuery(() =>
+    serverQueryCollection('bloqueos', {
+      filters: [{ field: 'date', op: '==', value: newSlot.date }],
+    })
+  );
+  const startMinRest = timeToMinutes(newSlot.startTime);
+  const endMinRest = startMinRest + durationMinutes;
+
+  const chosenBarberId = slotDetail.availableBarberIds.find((bId) => {
+    const hasBlockOverlap = freshDayBlocks.some((bDoc) => {
+      const d = bDoc.data ?? {};
+      const bBarberId = String(d.barberId ?? '');
+      if (bBarberId !== 'all' && bBarberId !== bId) return false;
+      const bStart = d.allDay
+        ? timeToMinutes('00:00')
+        : timeToMinutes(String(d.startTime ?? ''));
+      const bEnd = d.allDay
+        ? timeToMinutes('23:59')
+        : timeToMinutes(String(d.endTime ?? ''));
+      return intervalsOverlap(startMinRest, endMinRest, bStart, bEnd);
+    });
+    return !hasBlockOverlap;
+  });
+
+  if (!chosenBarberId) {
+    throw new BookingConflictError(
+      'El nuevo horario elegido fue bloqueado o ya no está disponible.'
+    );
+  }
+
   const barberSnap = await serverGetDoc('barberos', chosenBarberId, idToken);
   if (!barberSnap.exists || !barberSnap.data?.active) {
     throw new BookingConflictError('El barbero seleccionado no está activo.');

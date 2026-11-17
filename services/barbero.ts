@@ -1,10 +1,17 @@
 import 'server-only';
 import { Timestamp } from 'firebase-admin/firestore';
 import type { SessionUser } from '@/lib/auth/session';
+import { DEFAULT_SLOT_INTERVAL_MINUTES } from '@/lib/constants/config';
 import {
+  generateFirestoreAutoId,
   serverGetDoc,
   serverQueryCollection,
+  serverSetDoc,
 } from '@/lib/firestore-server';
+import {
+  resolveEffectiveDaySchedule,
+  validateAndComputeBlockedSlots,
+} from '@/lib/utils/schedule-blocks';
 import { getBogotaDateString } from '@/lib/utils/timezone';
 import {
   AppointmentStatus,
@@ -367,5 +374,277 @@ export async function getBarberWorkspaceData(params: {
     generalDays,
     hasCustomSchedule,
     blocks,
+  };
+}
+
+export class BarberBlockValidationError extends Error {
+  status = 400;
+  code = 'INVALID_BLOCK';
+  constructor(message: string) {
+    super(message);
+    this.name = 'BarberBlockValidationError';
+  }
+}
+
+export class BarberBlockConflictError extends Error {
+  status = 409;
+  code: string;
+  constructor(message: string, code = 'BLOCK_CONFLICT') {
+    super(message);
+    this.name = 'BarberBlockConflictError';
+    this.code = code;
+  }
+}
+
+export class BarberBlockNotFoundError extends Error {
+  status = 404;
+  code = 'BARBER_NOT_FOUND';
+  constructor(message: string) {
+    super(message);
+    this.name = 'BarberBlockNotFoundError';
+  }
+}
+
+export interface CreateValidatedScheduleBlockResult {
+  block: ScheduleBlock;
+  deactivatedSlots: string[];
+  deactivatedCount: number;
+  message: string;
+}
+
+export async function createValidatedScheduleBlock(params: {
+  session: SessionUser;
+  targetBarberId: string; // ID del barbero o 'all' (solo admin)
+  targetBarberUid?: string;
+  date: string;
+  allDay: boolean;
+  startTime?: string;
+  endTime?: string;
+  reason: string;
+  idToken?: string;
+}): Promise<CreateValidatedScheduleBlockResult> {
+  const {
+    session,
+    targetBarberId,
+    targetBarberUid,
+    date,
+    allDay,
+    startTime,
+    endTime,
+    reason,
+    idToken,
+  } = params;
+
+  if (!targetBarberId || !targetBarberId.trim()) {
+    throw new BarberBlockValidationError(
+      'No encontramos un perfil de barbero asociado para registrar el bloqueo.'
+    );
+  }
+
+  if (targetBarberId === 'all' && session.role !== UserRole.ADMIN) {
+    throw new BarberBlockValidationError(
+      'Solo un administrador puede crear bloqueos globales para toda la barbería.'
+    );
+  }
+
+  // Verificar existencia del barbero si no es bloqueo global
+  let resolvedBarberUid = targetBarberUid;
+  if (targetBarberId !== 'all') {
+    const barberDoc = await serverGetDoc('barberos', targetBarberId, idToken);
+    if (!barberDoc.exists || !barberDoc.data) {
+      throw new BarberBlockNotFoundError('El barbero seleccionado no existe.');
+    }
+    resolvedBarberUid =
+      session.role === UserRole.BARBER
+        ? session.uid
+        : String(barberDoc.data.userId ?? targetBarberUid ?? '');
+  }
+
+  const isBarberRole = session.role === UserRole.BARBER;
+
+  const [
+    configSnap,
+    generalScheduleSnap,
+    barberScheduleSnap,
+    allActiveBarbersDocs,
+    activeServicesDocs,
+    dayBlocksDocs,
+    appointmentsDocs,
+  ] = await Promise.all([
+    serverGetDoc('configuracion', 'main', idToken).catch(() => ({
+      id: 'main',
+      exists: false,
+      data: undefined,
+    })),
+    serverGetDoc('horarios', 'general', idToken).catch(() => ({
+      id: 'general',
+      exists: false,
+      data: undefined,
+    })),
+    targetBarberId !== 'all'
+      ? serverGetDoc('horarios', targetBarberId, idToken).catch(() => ({
+          id: targetBarberId,
+          exists: false,
+          data: undefined,
+        }))
+      : Promise.resolve({ id: 'all', exists: false, data: undefined }),
+    targetBarberId === 'all'
+      ? serverQueryCollection(
+          'barberos',
+          { filters: [{ field: 'active', op: '==', value: true }] },
+          idToken
+        ).catch(() => [])
+      : Promise.resolve([]),
+    serverQueryCollection(
+      'servicios',
+      { filters: [{ field: 'active', op: '==', value: true }] },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'bloqueos',
+      { filters: [{ field: 'date', op: '==', value: date }] },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'citas',
+      {
+        filters: [
+          isBarberRole
+            ? { field: 'barberUid', op: '==', value: session.uid }
+            : { field: 'date', op: '==', value: date },
+        ],
+      },
+      idToken
+    ).catch(() => []),
+  ]);
+
+  const slotIntervalMinutes = Number(
+    configSnap.data?.slotIntervalMinutes ?? DEFAULT_SLOT_INTERVAL_MINUTES
+  );
+
+  const generalDays = Array.isArray(generalScheduleSnap.data?.days)
+    ? (generalScheduleSnap.data?.days as DaySchedule[])
+    : DEFAULT_DAYS;
+
+  let daySchedules: DaySchedule[] = [];
+  if (targetBarberId === 'all') {
+    const activeIds = allActiveBarbersDocs.map((b) => b.id);
+    if (activeIds.length === 0) {
+      daySchedules = [resolveEffectiveDaySchedule(date, undefined, generalDays)];
+    } else {
+      const perBarberSchedules = await Promise.all(
+        activeIds.map((id) =>
+          serverGetDoc('horarios', id, idToken).catch(() => ({
+            id,
+            exists: false,
+            data: undefined,
+          }))
+        )
+      );
+      daySchedules = perBarberSchedules.map((snap) =>
+        resolveEffectiveDaySchedule(
+          date,
+          Array.isArray(snap.data?.days)
+            ? (snap.data?.days as DaySchedule[])
+            : undefined,
+          generalDays
+        )
+      );
+    }
+  } else {
+    const barberDays =
+      barberScheduleSnap.exists && Array.isArray(barberScheduleSnap.data?.days)
+        ? (barberScheduleSnap.data?.days as DaySchedule[])
+        : undefined;
+    daySchedules = [resolveEffectiveDaySchedule(date, barberDays, generalDays)];
+  }
+
+  const serviceDurations = activeServicesDocs
+    .map((s) => Number(s.data?.durationMinutes ?? 0))
+    .filter((d) => Number.isFinite(d) && d > 0);
+  const minServiceDurationMinutes =
+    serviceDurations.length > 0 ? Math.min(...serviceDurations) : undefined;
+
+  const existingAppointments = appointmentsDocs.map((doc) => {
+    const d = doc.data ?? {};
+    return {
+      id: doc.id,
+      barberId: String(d.barberId ?? ''),
+      date: String(d.date ?? ''),
+      startTime: String(d.startTime ?? ''),
+      endTime: String(d.endTime ?? ''),
+      status: String(d.status ?? ''),
+      clientName: d.clientName ? String(d.clientName) : undefined,
+    };
+  });
+
+  const existingBlocks = dayBlocksDocs.map((doc) => {
+    const d = doc.data ?? {};
+    return {
+      id: doc.id,
+      barberId: String(d.barberId ?? ''),
+      date: String(d.date ?? ''),
+      allDay: Boolean(d.allDay),
+      startTime: d.startTime ? String(d.startTime) : undefined,
+      endTime: d.endTime ? String(d.endTime) : undefined,
+    };
+  });
+
+  const validation = validateAndComputeBlockedSlots({
+    barberId: targetBarberId,
+    date,
+    allDay,
+    startTime: allDay ? undefined : startTime,
+    endTime: allDay ? undefined : endTime,
+    daySchedules,
+    slotIntervalMinutes,
+    minServiceDurationMinutes,
+    existingAppointments,
+    existingBlocks,
+  });
+
+  if (!validation.ok) {
+    if (validation.status === 409) {
+      throw new BarberBlockConflictError(validation.error, validation.code);
+    }
+    throw new BarberBlockValidationError(validation.error);
+  }
+
+  const blockId = generateFirestoreAutoId();
+
+  await serverSetDoc(
+    'bloqueos',
+    blockId,
+    {
+      id: blockId,
+      barberId: targetBarberId,
+      ...(resolvedBarberUid ? { barberUid: resolvedBarberUid } : {}),
+      date,
+      allDay,
+      ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
+      reason,
+      createdBy: session.uid,
+    },
+    { serverTimestampFields: ['createdAt'] },
+    idToken
+  );
+
+  const block: ScheduleBlock = {
+    id: blockId,
+    barberId: targetBarberId,
+    ...(resolvedBarberUid ? { barberUid: resolvedBarberUid } : {}),
+    date,
+    allDay,
+    ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
+    reason,
+    createdBy: session.uid,
+    createdAt: new Date().toISOString(),
+  };
+
+  return {
+    block,
+    deactivatedSlots: validation.deactivatedSlots,
+    deactivatedCount: validation.deactivatedCount,
+    message: validation.summaryMessage,
   };
 }

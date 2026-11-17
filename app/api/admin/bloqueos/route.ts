@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
-import {
-  generateFirestoreAutoId,
-  serverGetDoc,
-  serverSetDoc,
-} from '@/lib/firestore-server';
 import { createBlockSchema } from '@/lib/validators/admin';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { getAdminSchedulesAndBlocks } from '@/services/admin';
+import {
+  BarberBlockConflictError,
+  BarberBlockNotFoundError,
+  BarberBlockValidationError,
+  createValidatedScheduleBlock,
+} from '@/services/barbero';
 import { UserRole } from '@/types';
 
 export async function GET(request: NextRequest) {
@@ -52,46 +53,47 @@ export async function POST(request: NextRequest) {
 
     const { barberId, date, allDay, startTime, endTime, reason } = parsed.data;
 
-    let barberUid: string | undefined;
-    if (barberId !== 'all') {
-      const barberSnap = await serverGetDoc(
-        'barberos',
-        barberId,
-        authResult.idToken
-      );
-      if (!barberSnap.exists) {
-        return NextResponse.json(
-          { error: 'El barbero seleccionado no existe.' },
-          { status: 404 }
-        );
-      }
-      barberUid = String(barberSnap.data?.userId ?? '');
-    }
-
-    const blockId = generateFirestoreAutoId();
-
-    await serverSetDoc(
-      'bloqueos',
-      blockId,
-      {
-        id: blockId,
-        barberId,
-        ...(barberUid ? { barberUid } : {}),
-        date,
-        allDay,
-        ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
-        reason,
-        createdBy: authResult.user.uid,
-      },
-      { serverTimestampFields: ['createdAt'] },
-      authResult.idToken
-    );
+    const result = await createValidatedScheduleBlock({
+      session: authResult.user,
+      targetBarberId: barberId,
+      date,
+      allDay,
+      startTime: startTime || undefined,
+      endTime: endTime || undefined,
+      reason,
+      idToken: authResult.idToken,
+    });
 
     return NextResponse.json(
-      { message: 'Bloqueo de agenda creado correctamente.', id: blockId },
+      {
+        message: result.message,
+        id: result.block.id,
+        block: result.block,
+        deactivatedSlots: result.deactivatedSlots,
+        deactivatedCount: result.deactivatedCount,
+      },
       { status: 201 }
     );
   } catch (error) {
+    if (error instanceof BarberBlockConflictError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 409 }
+      );
+    }
+    if (error instanceof BarberBlockNotFoundError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 404 }
+      );
+    }
+    if (error instanceof BarberBlockValidationError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 400 }
+      );
+    }
+
     const message = translateErrorMessageEs(
       error,
       'No fue posible crear el bloqueo.'

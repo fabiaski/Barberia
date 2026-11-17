@@ -106,8 +106,15 @@ export function generateScheduleTimeSlots(params: {
   daySchedule: DaySchedule | undefined;
   durationMinutes: number;
   intervalMinutes?: number;
+  now?: Date;
 }): string[] {
-  const { date, daySchedule, durationMinutes, intervalMinutes = 30 } = params;
+  const {
+    date,
+    daySchedule,
+    durationMinutes,
+    intervalMinutes = 30,
+    now = new Date(),
+  } = params;
   if (!daySchedule || !daySchedule.isOpen) {
     return [];
   }
@@ -121,8 +128,8 @@ export function generateScheduleTimeSlots(params: {
     ? timeToMinutes(daySchedule.breakEnd)
     : null;
 
-  const todayBogota = getBogotaDateString(new Date());
-  const nowMinutesBogota = timeToMinutes(getBogotaTimeString(new Date()));
+  const todayBogota = getBogotaDateString(now);
+  const nowMinutesBogota = timeToMinutes(getBogotaTimeString(now));
 
   const slots: string[] = [];
 

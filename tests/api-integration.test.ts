@@ -22,10 +22,12 @@ test('Salud del sistema y páginas públicas responden 200 OK', async () => {
     projectId: string;
     databaseId: string;
     hasAdminServiceAccount: boolean;
+    resendConfigured: boolean;
   };
   assert.equal(health.ok, true);
   assert.equal(health.projectId, 'cogent-operator-q6gf7');
   assert.ok(health.databaseId.length > 0);
+  assert.equal(typeof health.resendConfigured, 'boolean');
 
   for (const publicPath of ['/', '/reservar', '/reservar?gestionar=1', '/login']) {
     const res = await fetchStatus(publicPath);
@@ -143,6 +145,7 @@ test('API de disponibilidad valida parámetros, fechas pasadas y franjas abierta
     `/api/disponibilidad?barberId=any&date=${futureStr}`
   );
   assert.equal(futureRes.status, 200);
+  assert.match(futureRes.headers.get('cache-control') ?? '', /no-store/);
   const futurePayload = (await futureRes.json()) as {
     date: string;
     availableSlots: string[];

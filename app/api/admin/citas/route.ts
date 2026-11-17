@@ -138,41 +138,50 @@ export async function PATCH(request: NextRequest) {
 
     await serverCommitWrites(ops, authResult.idToken);
 
-    if (status === AppointmentStatus.CANCELLED && apptSnap.data) {
-      const apptData = apptSnap.data;
-      const clientEmail = String(apptData.clientEmail ?? '');
-      await sendBookingCancelledEmails({
-        summary: {
-          id: appointmentId,
-          bookingCode: String(
-            apptData.bookingCode ?? appointmentId.slice(0, 8).toUpperCase()
-          ),
-          serviceId: String(apptData.serviceId ?? ''),
-          serviceName: String(apptData.serviceName ?? ''),
-          priceCop: Number(apptData.priceCop ?? 0),
-          durationMinutes: Number(apptData.durationMinutes ?? 30),
-          barberId: String(apptData.barberId ?? ''),
-          barberName: String(apptData.barberName ?? ''),
-          date: String(apptData.date ?? ''),
-          startTime: String(apptData.startTime ?? ''),
-          endTime: String(apptData.endTime ?? ''),
-          status: AppointmentStatus.CANCELLED,
-          notes: apptData.notes ? String(apptData.notes) : undefined,
-          clientName: String(apptData.clientName ?? ''),
-          clientPhone: String(apptData.clientPhone ?? ''),
-          clientEmail,
-          canModify: false,
-          manageToken: createBookingManageToken(appointmentId, clientEmail),
-        },
-        cancelledBy: 'admin',
-        barberUid: String(apptData.barberUid ?? ''),
-        idToken: authResult.idToken,
-        requestOrigin: request.nextUrl.origin,
-      });
-    }
+    const previousStatus = String(apptSnap.data?.status ?? '');
+    const emailNotification =
+      status === AppointmentStatus.CANCELLED &&
+      previousStatus !== AppointmentStatus.CANCELLED &&
+      apptSnap.data
+        ? await sendBookingCancelledEmails({
+            summary: {
+              id: appointmentId,
+              bookingCode: String(
+                apptSnap.data.bookingCode ??
+                  appointmentId.slice(0, 8).toUpperCase()
+              ),
+              serviceId: String(apptSnap.data.serviceId ?? ''),
+              serviceName: String(apptSnap.data.serviceName ?? ''),
+              priceCop: Number(apptSnap.data.priceCop ?? 0),
+              durationMinutes: Number(apptSnap.data.durationMinutes ?? 30),
+              barberId: String(apptSnap.data.barberId ?? ''),
+              barberName: String(apptSnap.data.barberName ?? ''),
+              date: String(apptSnap.data.date ?? ''),
+              startTime: String(apptSnap.data.startTime ?? ''),
+              endTime: String(apptSnap.data.endTime ?? ''),
+              status: AppointmentStatus.CANCELLED,
+              notes: apptSnap.data.notes
+                ? String(apptSnap.data.notes)
+                : undefined,
+              clientName: String(apptSnap.data.clientName ?? ''),
+              clientPhone: String(apptSnap.data.clientPhone ?? ''),
+              clientEmail: String(apptSnap.data.clientEmail ?? ''),
+              canModify: false,
+              manageToken: createBookingManageToken(
+                appointmentId,
+                String(apptSnap.data.clientEmail ?? '')
+              ),
+            },
+            cancelledBy: 'admin',
+            barberUid: String(apptSnap.data.barberUid ?? ''),
+            idToken: authResult.idToken,
+            requestOrigin: request.nextUrl.origin,
+          })
+        : undefined;
 
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',
+      ...(emailNotification ? { emailNotification } : {}),
     });
   } catch (error) {
     const message = translateErrorMessageEs(

@@ -21,10 +21,7 @@ import {
   APPOINTMENT_STATUS_LABELS,
   SYSTEM_TIMEZONE,
 } from '@/lib/constants/config';
-import {
-  generateScheduleTimeSlots,
-  getUpcomingBookingDates,
-} from '@/lib/utils/schedule-slots';
+import { getUpcomingBookingDates } from '@/lib/utils/schedule-slots';
 import {
   formatCurrencyCOP,
   formatTime12h,
@@ -50,7 +47,7 @@ export function ManageBookingPanel({
   onClearInitialSummary,
   onSwitchToBook,
 }: ManageBookingPanelProps) {
-  const { schedule, barbers, config } = catalog;
+  const { schedule, barbers } = catalog;
 
   const [bookingCode, setBookingCode] = useState(
     initialSummary?.bookingCode ?? ''
@@ -122,6 +119,7 @@ export function ManageBookingPanel({
 
     fetch(`/api/disponibilidad?${params.toString()}`, {
       signal: controller.signal,
+      cache: 'no-store',
     })
       .then(async (res) => {
         if (!res.ok) return null;
@@ -134,6 +132,7 @@ export function ManageBookingPanel({
         });
       })
       .catch(() => {
+        if (controller.signal.aborted) return;
         setLiveSlots((prev) =>
           prev?.key === slotQueryKey ? prev : { key: slotQueryKey, slots: [] }
         );
@@ -142,24 +141,12 @@ export function ManageBookingPanel({
     return () => controller.abort();
   }, [rescheduleOpen, summary, newBarberId, newDate, slotQueryKey]);
 
-  const fallbackSlots = useMemo(() => {
-    if (!summary || !newDate) return [];
-    const dateMeta = upcomingDates.find((d) => d.date === newDate);
-    const dayObj = schedule.days.find((d) => d.dayOfWeek === dateMeta?.dayOfWeek);
-    return generateScheduleTimeSlots({
-      date: newDate,
-      daySchedule: dayObj,
-      durationMinutes: summary.durationMinutes,
-      intervalMinutes: config.slotIntervalMinutes || 30,
-    });
-  }, [summary, newDate, upcomingDates, schedule.days, config.slotIntervalMinutes]);
-
   const availableSlots = useMemo(() => {
     if (liveSlots && liveSlots.key === slotQueryKey) {
       return liveSlots.slots;
     }
-    return fallbackSlots;
-  }, [liveSlots, slotQueryKey, fallbackSlots]);
+    return [];
+  }, [liveSlots, slotQueryKey]);
 
   const effectiveNewTime = availableSlots.includes(newTime)
     ? newTime
@@ -249,6 +236,7 @@ export function ManageBookingPanel({
           summary?: PublicBookingSummary;
           message?: string;
           error?: string;
+          emailNotification?: { sent?: boolean; clientSent?: boolean };
         }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
@@ -261,11 +249,16 @@ export function ManageBookingPanel({
         return;
       }
 
+      const clientNotified = Boolean(
+        payload.emailNotification?.clientSent ?? payload.emailNotification?.sent
+      );
       setSummary(payload.summary);
       setConfirmCancelOpen(false);
       setRescheduleOpen(false);
       setSuccessMsg(
-        payload.message ?? 'Tu cita fue cancelada y el horario quedó libre.'
+        `${payload.message ?? 'Tu cita fue cancelada y el horario quedó libre.'}${
+          clientNotified ? ' Enviamos el comprobante a tu correo.' : ''
+        }`
       );
     } catch (error) {
       setErrorMsg(
@@ -307,6 +300,7 @@ export function ManageBookingPanel({
           message?: string;
           error?: string;
           code?: string;
+          emailNotification?: { sent?: boolean; clientSent?: boolean };
         }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
@@ -322,10 +316,15 @@ export function ManageBookingPanel({
         return;
       }
 
+      const clientNotified = Boolean(
+        payload.emailNotification?.clientSent ?? payload.emailNotification?.sent
+      );
       setSummary(payload.summary);
       setRescheduleOpen(false);
       setSuccessMsg(
-        payload.message ?? 'Tu cita fue reprogramada correctamente.'
+        `${payload.message ?? 'Tu cita fue reprogramada correctamente.'}${
+          clientNotified ? ' Enviamos el nuevo horario a tu correo.' : ''
+        }`
       );
     } catch (error) {
       setErrorMsg(

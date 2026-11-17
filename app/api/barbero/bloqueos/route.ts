@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiRole } from '@/lib/auth/guards';
-import { generateFirestoreAutoId, serverSetDoc } from '@/lib/firestore-server';
 import { barberCreateBlockSchema } from '@/lib/validators/barbero';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
-import { resolveBarberForSession } from '@/services/barbero';
+import {
+  BarberBlockConflictError,
+  BarberBlockNotFoundError,
+  BarberBlockValidationError,
+  createValidatedScheduleBlock,
+  resolveBarberForSession,
+} from '@/services/barbero';
 import { UserRole } from '@/types';
 
 export async function POST(request: NextRequest) {
@@ -37,47 +42,52 @@ export async function POST(request: NextRequest) {
       authResult.idToken
     );
 
-    const blockId = generateFirestoreAutoId();
     const targetBarberUid =
       authResult.user.role === UserRole.BARBER
         ? authResult.user.uid
         : barber.userId;
 
-    await serverSetDoc(
-      'bloqueos',
-      blockId,
-      {
-        id: blockId,
-        barberId: barber.id,
-        barberUid: targetBarberUid,
-        date,
-        allDay,
-        ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
-        reason,
-        createdBy: authResult.user.uid,
-      },
-      { serverTimestampFields: ['createdAt'] },
-      authResult.idToken
-    );
+    const result = await createValidatedScheduleBlock({
+      session: authResult.user,
+      targetBarberId: barber.id,
+      targetBarberUid,
+      date,
+      allDay,
+      startTime: startTime || undefined,
+      endTime: endTime || undefined,
+      reason,
+      idToken: authResult.idToken,
+    });
 
     return NextResponse.json(
       {
-        message: 'Bloqueo personal agregado correctamente.',
-        block: {
-          id: blockId,
-          barberId: barber.id,
-          barberUid: targetBarberUid,
-          date,
-          allDay,
-          ...(startTime && endTime && !allDay ? { startTime, endTime } : {}),
-          reason,
-          createdBy: authResult.user.uid,
-          createdAt: new Date().toISOString(),
-        },
+        message: result.message,
+        block: result.block,
+        deactivatedSlots: result.deactivatedSlots,
+        deactivatedCount: result.deactivatedCount,
       },
       { status: 201 }
     );
   } catch (error) {
+    if (error instanceof BarberBlockConflictError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 409 }
+      );
+    }
+    if (error instanceof BarberBlockNotFoundError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 404 }
+      );
+    }
+    if (error instanceof BarberBlockValidationError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 400 }
+      );
+    }
+
     const message = translateErrorMessageEs(
       error,
       'No fue posible crear el bloqueo personal.'

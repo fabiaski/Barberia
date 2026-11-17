@@ -40,6 +40,7 @@ export function DashboardReportsClient({
   const [loading, setLoading] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string>('');
+  const [statusNotice, setStatusNotice] = useState<string>('');
 
   const applyFilters = async (overrides?: {
     dateFrom?: string;
@@ -94,6 +95,7 @@ export function DashboardReportsClient({
   ) => {
     setUpdatingId(appointmentId);
     setFeedback('');
+    setStatusNotice('');
     try {
       const response = await fetch('/api/admin/citas', {
         method: 'PATCH',
@@ -102,13 +104,27 @@ export function DashboardReportsClient({
         body: JSON.stringify({ appointmentId, status: newStatus }),
       });
       const data =
-        (await parseJsonResponseSafe<{ error?: string }>(response)) ?? {};
+        (await parseJsonResponseSafe<{
+          message?: string;
+          error?: string;
+          emailNotification?: { sent?: boolean; clientSent?: boolean };
+        }>(response)) ?? {};
       if (!response.ok) {
         throw new Error(
           translateErrorMessageEs(data.error, 'No se pudo actualizar la cita.')
         );
       }
+      const clientNotified =
+        newStatus === AppointmentStatus.CANCELLED &&
+        Boolean(data.emailNotification?.clientSent);
       await applyFilters();
+      setStatusNotice(
+        `${data.message || 'Estado de la cita actualizado correctamente.'}${
+          clientNotified
+            ? ' Se envió aviso de cancelación al cliente por correo.'
+            : ''
+        }`
+      );
     } catch (err) {
       setFeedback(
         translateErrorMessageEs(err, 'Error al actualizar el estado.')
@@ -295,6 +311,11 @@ export function DashboardReportsClient({
 
         {feedback && (
           <p className="mt-3 text-xs font-medium text-red-600">{feedback}</p>
+        )}
+        {statusNotice && (
+          <p className="mt-3 text-xs font-medium text-emerald-700">
+            {statusNotice}
+          </p>
         )}
       </section>
 

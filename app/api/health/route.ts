@@ -15,6 +15,7 @@ export async function GET() {
     projectId,
     databaseId,
     hasAdminServiceAccount: hasAdminServiceAccount(),
+    resendConfigured: Boolean(process.env.RESEND_API_KEY?.trim()),
     timestamp: new Date().toISOString(),
   });
 }

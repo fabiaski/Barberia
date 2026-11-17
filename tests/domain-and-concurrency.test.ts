@@ -7,6 +7,10 @@ import {
   verifyBookingManageToken,
 } from '@/lib/auth/manage-token';
 import { generateScheduleTimeSlots } from '@/lib/utils/schedule-slots';
+import {
+  resolveEffectiveDaySchedule,
+  validateAndComputeBlockedSlots,
+} from '@/lib/utils/schedule-blocks';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import {
   buildAppointmentWhatsAppUrl,
@@ -498,5 +502,195 @@ test('Reglas de Firestore permiten lectura pública de bloqueos por fecha y hora
     rulesText,
     /match \/bloqueos\/\{blockId\}[\s\S]*?allow list:\s*if resource\.data\.date is string && resource\.data\.date\.size\(\) == 10;/
   );
+});
+
+test('Bloqueos personales validan fechas, citas activas, duplicados y calculan turnos desactivados automáticamente', () => {
+  const fixedNow = new Date('2026-11-14T15:00:00.000Z'); // 10:00 AM America/Bogota
+  const openDay: DaySchedule = {
+    dayOfWeek: 6, // Sábado 2026-11-14
+    isOpen: true,
+    openTime: '08:00',
+    closeTime: '20:00',
+  };
+
+  // 1. Rechaza fecha pasada
+  const pastRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-13',
+    allDay: true,
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    existingAppointments: [],
+    existingBlocks: [],
+    now: fixedNow,
+  });
+  assert.equal(pastRes.ok, false);
+  if (!pastRes.ok) {
+    assert.equal(pastRes.status, 400);
+    assert.equal(pastRes.code, 'INVALID_BLOCK');
+  }
+
+  // 2. Rechaza rango horario que ya transcurrió hoy en America/Bogota
+  const pastTodayRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-14',
+    allDay: false,
+    startTime: '08:00',
+    endTime: '09:30',
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    existingAppointments: [],
+    existingBlocks: [],
+    now: fixedNow,
+  });
+  assert.equal(pastTodayRes.ok, false);
+  if (!pastTodayRes.ok) {
+    assert.equal(pastTodayRes.status, 400);
+    assert.equal(pastTodayRes.code, 'INVALID_BLOCK');
+  }
+
+  // 3. Rechaza si hay cita confirmada o en proceso traslapada para ese barbero
+  const conflictRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-20',
+    allDay: false,
+    startTime: '12:00',
+    endTime: '14:00',
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    existingAppointments: [
+      {
+        id: 'cita-1',
+        barberId: 'barbero-1',
+        date: '2026-11-20',
+        startTime: '12:30',
+        endTime: '13:00',
+        status: AppointmentStatus.CONFIRMED,
+        clientName: 'Camilo Torres',
+      },
+    ],
+    existingBlocks: [],
+    now: fixedNow,
+  });
+  assert.equal(conflictRes.ok, false);
+  if (!conflictRes.ok) {
+    assert.equal(conflictRes.status, 409);
+    assert.equal(conflictRes.code, 'APPOINTMENT_CONFLICT');
+    assert.match(conflictRes.error, /Camilo Torres/);
+  }
+
+  // 4. Ignora citas canceladas o de otro barbero y calcula turnos desactivados exactamente
+  const validPartialRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-20',
+    allDay: false,
+    startTime: '12:00',
+    endTime: '14:00',
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    minServiceDurationMinutes: 20,
+    existingAppointments: [
+      {
+        id: 'cita-cancelada',
+        barberId: 'barbero-1',
+        date: '2026-11-20',
+        startTime: '12:30',
+        endTime: '13:00',
+        status: AppointmentStatus.CANCELLED,
+        clientName: 'Cliente Cancelado',
+      },
+      {
+        id: 'cita-otro-barbero',
+        barberId: 'barbero-2',
+        date: '2026-11-20',
+        startTime: '13:00',
+        endTime: '13:30',
+        status: AppointmentStatus.CONFIRMED,
+        clientName: 'Otro Barbero',
+      },
+    ],
+    existingBlocks: [],
+    now: fixedNow,
+  });
+  assert.equal(validPartialRes.ok, true);
+  if (validPartialRes.ok) {
+    assert.deepEqual(validPartialRes.deactivatedSlots, [
+      '12:00',
+      '12:30',
+      '13:00',
+      '13:30',
+    ]);
+    assert.equal(validPartialRes.deactivatedCount, 4);
+    assert.match(validPartialRes.summaryMessage, /4 turnos disponibles/);
+  }
+
+  // 5. Rechaza bloqueos redundantes si ya está cubierto por otro bloqueo
+  const duplicateRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-20',
+    allDay: false,
+    startTime: '12:30',
+    endTime: '13:30',
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    existingAppointments: [],
+    existingBlocks: [
+      {
+        id: 'bl-1',
+        barberId: 'barbero-1',
+        date: '2026-11-20',
+        allDay: false,
+        startTime: '12:00',
+        endTime: '14:00',
+      },
+    ],
+    now: fixedNow,
+  });
+  assert.equal(duplicateRes.ok, false);
+  if (!duplicateRes.ok) {
+    assert.equal(duplicateRes.status, 409);
+    assert.equal(duplicateRes.code, 'DUPLICATE_BLOCK');
+  }
+
+  // 6. Bloqueo de día completo desactiva todos los turnos de la jornada del barbero
+  const effectiveSchedule = resolveEffectiveDaySchedule(
+    '2026-11-20',
+    [
+      {
+        dayOfWeek: 5, // Viernes 2026-11-20
+        isOpen: true,
+        openTime: '09:00',
+        closeTime: '17:00',
+      },
+    ],
+    [
+      {
+        dayOfWeek: 5,
+        isOpen: true,
+        openTime: '08:00',
+        closeTime: '20:00',
+      },
+    ]
+  );
+  assert.equal(effectiveSchedule.openTime, '09:00');
+  assert.equal(effectiveSchedule.closeTime, '17:00');
+
+  const allDayRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-20',
+    allDay: true,
+    daySchedules: [effectiveSchedule],
+    slotIntervalMinutes: 30,
+    existingAppointments: [],
+    existingBlocks: [],
+    now: fixedNow,
+  });
+  assert.equal(allDayRes.ok, true);
+  if (allDayRes.ok) {
+    // 09:00 .. 16:30 cada 30 min = 16 turnos
+    assert.equal(allDayRes.deactivatedCount, 16);
+    assert.equal(allDayRes.deactivatedSlots[0], '09:00');
+    assert.equal(allDayRes.deactivatedSlots[15], '16:30');
+  }
 });
 
