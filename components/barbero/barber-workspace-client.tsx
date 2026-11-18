@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Clock,
   MessageCircle,
+  Pencil,
   Phone,
   Play,
   Plus,
@@ -34,7 +35,7 @@ import {
 } from '@/lib/utils/timezone';
 import { buildAppointmentWhatsAppUrl } from '@/lib/utils/whatsapp';
 import type { BarberAgendaRange, BarberWorkspaceData } from '@/services/barbero';
-import { AppointmentStatus, type DaySchedule } from '@/types';
+import { AppointmentStatus, type DaySchedule, type ScheduleBlock } from '@/types';
 
 interface BarberWorkspaceClientProps {
   initialData: BarberWorkspaceData;
@@ -80,6 +81,7 @@ export function BarberWorkspaceClient({
 
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [creatingBlock, setCreatingBlock] = useState(false);
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [deletingBlockId, setDeletingBlockId] = useState<string | null>(null);
   const [confirmDeleteBlockId, setConfirmDeleteBlockId] = useState<string | null>(
     null
@@ -261,14 +263,53 @@ export function BarberWorkspaceClient({
     });
   };
 
-  const handleCreateBlock = async (e: FormEvent) => {
+  const upsertSortedBlock = (
+    prevBlocks: ScheduleBlock[],
+    nextBlock: ScheduleBlock
+  ): ScheduleBlock[] => {
+    const filtered = prevBlocks.filter((b) => b.id !== nextBlock.id);
+    return [...filtered, nextBlock].sort((a, b) =>
+      `${a.date}_${a.startTime ?? '00:00'}`.localeCompare(
+        `${b.date}_${b.startTime ?? '00:00'}`
+      )
+    );
+  };
+
+  const handleStartEditBlock = (block: ScheduleBlock) => {
+    setConfirmDeleteBlockId(null);
+    setBlockFeedback(null);
+    setEditingBlockId(block.id);
+    setBlockDate(block.date);
+    setBlockAllDay(block.allDay);
+    setBlockStartTime(block.startTime ?? '12:00');
+    setBlockEndTime(block.endTime ?? '13:00');
+    setBlockReason(block.reason);
+  };
+
+  const handleCancelEditBlock = () => {
+    setEditingBlockId(null);
+    setBlockDate(
+      workspace.date >= todayBogota ? workspace.date : todayBogota
+    );
+    setBlockAllDay(false);
+    setBlockStartTime('12:00');
+    setBlockEndTime('13:00');
+    setBlockReason('');
+    setBlockFeedback(null);
+  };
+
+  const handleCreateOrUpdateBlock = async (e: FormEvent) => {
     e.preventDefault();
     setCreatingBlock(true);
     setFeedback(null);
     setBlockFeedback(null);
+    const isEditing = Boolean(editingBlockId);
     try {
-      const res = await fetch('/api/barbero/bloqueos', {
-        method: 'POST',
+      const endpoint = isEditing
+        ? `/api/barbero/bloqueos/${editingBlockId}`
+        : '/api/barbero/bloqueos';
+      const res = await fetch(endpoint, {
+        method: isEditing ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           barberId: isAdminPreview ? workspace.barber.id : undefined,
@@ -283,18 +324,36 @@ export function BarberWorkspaceClient({
         (await parseJsonResponseSafe<{
           message?: string;
           error?: string;
+          block?: ScheduleBlock;
           deactivatedCount?: number;
         }>(res)) ?? {};
       if (!res.ok) {
         throw new Error(
           translateErrorMessageEs(
             payload.error,
-            'No se pudo registrar el bloqueo.'
+            isEditing
+              ? 'No se pudo actualizar el bloqueo.'
+              : 'No se pudo registrar el bloqueo.'
           )
         );
       }
+
+      if (payload.block) {
+        const savedBlock = payload.block;
+        setWorkspace((prev) => ({
+          ...prev,
+          blocks: upsertSortedBlock(prev.blocks, savedBlock),
+        }));
+      }
+
+      setEditingBlockId(null);
       setBlockReason('');
-      const successMessage = payload.message || 'Bloqueo personal agregado.';
+      setBlockAllDay(false);
+      const successMessage =
+        payload.message ||
+        (isEditing
+          ? 'Bloqueo personal actualizado.'
+          : 'Bloqueo personal agregado.');
       setFeedback({
         type: 'success',
         text: successMessage,
@@ -307,7 +366,9 @@ export function BarberWorkspaceClient({
     } catch (error) {
       const errorMessage = translateErrorMessageEs(
         error,
-        'Error al registrar el bloqueo personal.'
+        isEditing
+          ? 'Error al actualizar el bloqueo personal.'
+          : 'Error al registrar el bloqueo personal.'
       );
       setFeedback({
         type: 'error',
@@ -343,6 +404,13 @@ export function BarberWorkspaceClient({
         );
       }
       setConfirmDeleteBlockId(null);
+      if (editingBlockId === blockId) {
+        handleCancelEditBlock();
+      }
+      setWorkspace((prev) => ({
+        ...prev,
+        blocks: prev.blocks.filter((b) => b.id !== blockId),
+      }));
       const successMessage =
         payload.message ||
         'Bloqueo eliminado. Los turnos de ese horario vuelven a estar disponibles si el día está abierto.';
@@ -1211,14 +1279,27 @@ export function BarberWorkspaceClient({
         </div>
 
         <div className="mt-6 grid gap-8 lg:grid-cols-[1fr_1.2fr]">
-          {/* Formulario de creación */}
+          {/* Formulario de creación / edición */}
           <form
-            onSubmit={handleCreateBlock}
+            onSubmit={handleCreateOrUpdateBlock}
             className="space-y-4 rounded-xl border border-stone-200 bg-stone-50/50 p-4 sm:p-5"
           >
-            <h3 className="text-sm font-semibold text-stone-900">
-              Agregar nuevo bloqueo
-            </h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-stone-900">
+                {editingBlockId
+                  ? 'Modificar bloqueo personal'
+                  : 'Agregar nuevo bloqueo'}
+              </h3>
+              {editingBlockId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEditBlock}
+                  className="text-xs font-medium text-stone-600 underline underline-offset-2 hover:text-stone-900"
+                >
+                  Cancelar edición
+                </button>
+              )}
+            </div>
 
             {blockFeedback && (
               <div
@@ -1329,23 +1410,51 @@ export function BarberWorkspaceClient({
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={creatingBlock}
-              className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-amber-800 disabled:opacity-60"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              <span>
-                {creatingBlock ? 'Guardando bloqueo...' : 'Agregar bloqueo'}
-              </span>
-            </button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="submit"
+                disabled={creatingBlock}
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white transition-colors hover:bg-amber-800 disabled:opacity-60"
+              >
+                {editingBlockId ? (
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span>
+                  {creatingBlock
+                    ? editingBlockId
+                      ? 'Guardando cambios...'
+                      : 'Guardando bloqueo...'
+                    : editingBlockId
+                      ? 'Guardar cambios'
+                      : 'Agregar bloqueo'}
+                </span>
+              </button>
+
+              {editingBlockId && (
+                <button
+                  type="button"
+                  disabled={creatingBlock}
+                  onClick={handleCancelEditBlock}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-stone-300 bg-white px-4 text-xs font-medium text-stone-700 hover:bg-stone-100"
+                >
+                  Cancelar
+                </button>
+              )}
+            </div>
           </form>
 
           {/* Listado de bloqueos vigentes */}
           <div>
-            <h3 className="text-sm font-semibold text-stone-900">
-              Bloqueos vigentes ({workspace.blocks.length})
-            </h3>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-sm font-semibold text-stone-900">
+                Bloqueos vigentes ({workspace.blocks.length})
+              </h3>
+              <p className="text-[11px] text-stone-500">
+                Se eliminan automáticamente al pasar la fecha del bloqueo.
+              </p>
+            </div>
             {workspace.blocks.length === 0 ? (
               <div className="mt-3 rounded-xl border border-dashed border-stone-200 p-6 text-center text-xs text-stone-500">
                 No tienes bloqueos próximos registrados.
@@ -1354,13 +1463,16 @@ export function BarberWorkspaceClient({
               <ul className="mt-3 divide-y divide-stone-200 rounded-xl border border-stone-200">
                 {workspace.blocks.map((block) => {
                   const isGlobal = block.barberId === 'all';
+                  const isEditingThis = editingBlockId === block.id;
                   const confirmingDelete = confirmDeleteBlockId === block.id;
                   const deleting = deletingBlockId === block.id;
 
                   return (
                     <li
                       key={block.id}
-                      className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+                      className={`flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${
+                        isEditingThis ? 'bg-amber-50/60' : ''
+                      }`}
                     >
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1407,14 +1519,32 @@ export function BarberWorkspaceClient({
                               </button>
                             </div>
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteBlockId(block.id)}
-                              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 text-xs font-medium text-stone-700 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              <span>Eliminar</span>
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={creatingBlock || deleting}
+                                onClick={() => handleStartEditBlock(block)}
+                                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 text-xs font-medium text-stone-700 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-900 disabled:opacity-50"
+                              >
+                                <Pencil
+                                  className="h-3.5 w-3.5"
+                                  aria-hidden="true"
+                                />
+                                <span>Modificar</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={creatingBlock || deleting}
+                                onClick={() => setConfirmDeleteBlockId(block.id)}
+                                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 text-xs font-medium text-stone-700 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                              >
+                                <Trash2
+                                  className="h-3.5 w-3.5"
+                                  aria-hidden="true"
+                                />
+                                <span>Eliminar</span>
+                              </button>
+                            </div>
                           )}
                         </div>
                       )}

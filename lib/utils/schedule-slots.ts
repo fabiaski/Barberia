@@ -46,9 +46,10 @@ export function getDayOfWeekBogota(dateStr: string): number {
  */
 export function getUpcomingBookingDates(
   daysSchedule: DaySchedule[],
-  totalDays: number = 14
+  totalDays: number = 14,
+  now: Date = new Date()
 ): UpcomingDateOption[] {
-  const todayStr = getBogotaDateString(new Date());
+  const todayStr = getBogotaDateString(now);
   const [y, m, d] = todayStr.split('-').map(Number);
   const options: UpcomingDateOption[] = [];
 
@@ -129,6 +130,9 @@ export function generateScheduleTimeSlots(params: {
     : null;
 
   const todayBogota = getBogotaDateString(now);
+  if (date < todayBogota) {
+    return [];
+  }
   const nowMinutesBogota = timeToMinutes(getBogotaTimeString(now));
 
   const slots: string[] = [];
@@ -140,8 +144,8 @@ export function generateScheduleTimeSlots(params: {
   ) {
     const end = start + durationMinutes;
 
-    // Si es hoy en Colombia, exigir al menos 30 min de anticipación
-    if (date === todayBogota && start < nowMinutesBogota + 30) {
+    // Si es hoy en Colombia, ocultar cualquier turno cuya hora de inicio ya llegó o pasó
+    if (date === todayBogota && start <= nowMinutesBogota) {
       continue;
     }
 

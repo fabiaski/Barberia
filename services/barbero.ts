@@ -4,11 +4,14 @@ import type { SessionUser } from '@/lib/auth/session';
 import { DEFAULT_SLOT_INTERVAL_MINUTES } from '@/lib/constants/config';
 import {
   generateFirestoreAutoId,
+  serverCommitWrites,
   serverGetDoc,
   serverQueryCollection,
   serverSetDoc,
+  serverUpdateDoc,
 } from '@/lib/firestore-server';
 import {
+  partitionExpiredScheduleBlocks,
   resolveEffectiveDaySchedule,
   validateAndComputeBlockedSlots,
 } from '@/lib/utils/schedule-blocks';
@@ -232,22 +235,28 @@ export async function getBarberWorkspaceData(params: {
       },
       idToken
     ).catch(() => []),
-    serverQueryCollection(
-      'bloqueos',
-      {
-        filters: [
-          isBarberRole
-            ? { field: 'barberUid', op: '==', value: session.uid }
-            : { field: 'barberId', op: '==', value: barber.id },
-        ],
-      },
-      idToken
-    ).catch(() => []),
-    serverQueryCollection(
-      'bloqueos',
-      { filters: [{ field: 'barberId', op: '==', value: 'all' }] },
-      idToken
-    ).catch(() => []),
+    isBarberRole
+      ? serverQueryCollection(
+          'bloqueos',
+          {
+            filters: [{ field: 'barberUid', op: '==', value: session.uid }],
+          },
+          idToken
+        ).catch(() => [])
+      : serverQueryCollection(
+          'bloqueos',
+          {
+            filters: [{ field: 'date', op: '>=', value: '1970-01-01' }],
+          },
+          idToken
+        ).catch(() => []),
+    isBarberRole
+      ? serverQueryCollection(
+          'bloqueos',
+          { filters: [{ field: 'barberId', op: '==', value: 'all' }] },
+          idToken
+        ).catch(() => [])
+      : Promise.resolve([]),
     serverGetDoc('horarios', barber.id, idToken).catch(() => ({
       id: barber.id,
       exists: false,
@@ -335,8 +344,31 @@ export async function getBarberWorkspaceData(params: {
     });
   }
 
-  const blocks = Array.from(blockMap.values())
-    .filter((b) => b.date >= todayBogota)
+  const { activeBlocks, expiredBlocks } = partitionExpiredScheduleBlocks(
+    Array.from(blockMap.values()),
+    todayBogota
+  );
+
+  const expiredIdsToDelete = expiredBlocks
+    .filter((b) =>
+      isBarberRole
+        ? b.barberId !== 'all' && b.barberUid === session.uid
+        : true
+    )
+    .map((b) => b.id);
+
+  if (expiredIdsToDelete.length > 0) {
+    await deleteExpiredBlockIds(expiredIdsToDelete, idToken);
+  }
+
+  const blocks = activeBlocks
+    .filter((b) =>
+      isBarberRole
+        ? b.barberId === 'all' ||
+          b.barberId === barber.id ||
+          b.barberUid === session.uid
+        : b.barberId === barber.id || b.barberId === 'all'
+    )
     .sort((a, b) =>
       `${a.date}_${a.startTime ?? '00:00'}`.localeCompare(
         `${b.date}_${b.startTime ?? '00:00'}`
@@ -402,6 +434,36 @@ export class BarberBlockNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'BarberBlockNotFoundError';
+  }
+}
+
+export class BarberBlockPermissionError extends Error {
+  status = 403;
+  code = 'FORBIDDEN';
+  constructor(message: string) {
+    super(message);
+    this.name = 'BarberBlockPermissionError';
+  }
+}
+
+export async function deleteExpiredBlockIds(
+  blockIds: string[],
+  idToken?: string
+): Promise<void> {
+  if (blockIds.length === 0) return;
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < blockIds.length; i += CHUNK_SIZE) {
+    const chunk = blockIds.slice(i, i + CHUNK_SIZE);
+    await serverCommitWrites(
+      chunk.map((docId) => ({
+        type: 'delete',
+        collection: 'bloqueos',
+        docId,
+      })),
+      idToken
+    ).catch((err) => {
+      console.error('[bloqueos] Error al eliminar bloqueos vencidos:', err);
+    });
   }
 }
 
@@ -639,6 +701,275 @@ export async function createValidatedScheduleBlock(params: {
     reason,
     createdBy: session.uid,
     createdAt: new Date().toISOString(),
+  };
+
+  return {
+    block,
+    deactivatedSlots: validation.deactivatedSlots,
+    deactivatedCount: validation.deactivatedCount,
+    message: validation.summaryMessage,
+  };
+}
+
+export async function updateValidatedScheduleBlock(params: {
+  blockId: string;
+  session: SessionUser;
+  targetBarberId?: string;
+  date: string;
+  allDay: boolean;
+  startTime?: string;
+  endTime?: string;
+  reason: string;
+  idToken?: string;
+}): Promise<CreateValidatedScheduleBlockResult> {
+  const {
+    blockId,
+    session,
+    targetBarberId,
+    date,
+    allDay,
+    startTime,
+    endTime,
+    reason,
+    idToken,
+  } = params;
+
+  const existingSnap = await serverGetDoc('bloqueos', blockId, idToken);
+  if (!existingSnap.exists || !existingSnap.data) {
+    throw new BarberBlockNotFoundError(
+      'El bloqueo que intentas modificar no existe.'
+    );
+  }
+
+  const existingData = existingSnap.data;
+  const existingBarberId = String(existingData.barberId ?? '');
+  const existingBarberUid = existingData.barberUid
+    ? String(existingData.barberUid)
+    : undefined;
+
+  const isBarberRole = session.role === UserRole.BARBER;
+
+  if (isBarberRole) {
+    if (existingBarberUid !== session.uid || existingBarberId === 'all') {
+      throw new BarberBlockPermissionError(
+        'No puedes modificar bloqueos globales o de otros barberos.'
+      );
+    }
+  }
+
+  const effectiveBarberId = isBarberRole
+    ? existingBarberId
+    : targetBarberId || existingBarberId || 'all';
+
+  if (effectiveBarberId === 'all' && isBarberRole) {
+    throw new BarberBlockValidationError(
+      'Solo un administrador puede configurar bloqueos globales para toda la barbería.'
+    );
+  }
+
+  let effectiveBarberUid = isBarberRole ? session.uid : existingBarberUid;
+  if (effectiveBarberId !== 'all') {
+    const barberDoc = await serverGetDoc('barberos', effectiveBarberId, idToken);
+    if (!barberDoc.exists || !barberDoc.data) {
+      throw new BarberBlockNotFoundError('El barbero seleccionado no existe.');
+    }
+    effectiveBarberUid = isBarberRole
+      ? session.uid
+      : String(barberDoc.data.userId ?? existingBarberUid ?? '');
+  } else {
+    effectiveBarberUid = undefined;
+  }
+
+  const [
+    configSnap,
+    generalScheduleSnap,
+    barberScheduleSnap,
+    allActiveBarbersDocs,
+    activeServicesDocs,
+    dayBlocksDocs,
+    appointmentsDocs,
+  ] = await Promise.all([
+    serverGetDoc('configuracion', 'main', idToken).catch(() => ({
+      id: 'main',
+      exists: false,
+      data: undefined,
+    })),
+    serverGetDoc('horarios', 'general', idToken).catch(() => ({
+      id: 'general',
+      exists: false,
+      data: undefined,
+    })),
+    effectiveBarberId !== 'all'
+      ? serverGetDoc('horarios', effectiveBarberId, idToken).catch(() => ({
+          id: effectiveBarberId,
+          exists: false,
+          data: undefined,
+        }))
+      : Promise.resolve({ id: 'all', exists: false, data: undefined }),
+    effectiveBarberId === 'all'
+      ? serverQueryCollection(
+          'barberos',
+          { filters: [{ field: 'active', op: '==', value: true }] },
+          idToken
+        ).catch(() => [])
+      : Promise.resolve([]),
+    serverQueryCollection(
+      'servicios',
+      { filters: [{ field: 'active', op: '==', value: true }] },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'bloqueos',
+      { filters: [{ field: 'date', op: '==', value: date }] },
+      idToken
+    ).catch(() => []),
+    serverQueryCollection(
+      'citas',
+      {
+        filters: [
+          isBarberRole
+            ? { field: 'barberUid', op: '==', value: session.uid }
+            : { field: 'date', op: '==', value: date },
+        ],
+      },
+      idToken
+    ).catch(() => []),
+  ]);
+
+  const slotIntervalMinutes = Number(
+    configSnap.data?.slotIntervalMinutes ?? DEFAULT_SLOT_INTERVAL_MINUTES
+  );
+
+  const generalDays = Array.isArray(generalScheduleSnap.data?.days)
+    ? (generalScheduleSnap.data?.days as DaySchedule[])
+    : DEFAULT_DAYS;
+
+  let daySchedules: DaySchedule[] = [];
+  if (effectiveBarberId === 'all') {
+    const activeIds = allActiveBarbersDocs.map((b) => b.id);
+    if (activeIds.length === 0) {
+      daySchedules = [resolveEffectiveDaySchedule(date, undefined, generalDays)];
+    } else {
+      const perBarberSchedules = await Promise.all(
+        activeIds.map((id) =>
+          serverGetDoc('horarios', id, idToken).catch(() => ({
+            id,
+            exists: false,
+            data: undefined,
+          }))
+        )
+      );
+      daySchedules = perBarberSchedules.map((snap) =>
+        resolveEffectiveDaySchedule(
+          date,
+          Array.isArray(snap.data?.days)
+            ? (snap.data?.days as DaySchedule[])
+            : undefined,
+          generalDays
+        )
+      );
+    }
+  } else {
+    const barberDays =
+      barberScheduleSnap.exists && Array.isArray(barberScheduleSnap.data?.days)
+        ? (barberScheduleSnap.data?.days as DaySchedule[])
+        : undefined;
+    daySchedules = [resolveEffectiveDaySchedule(date, barberDays, generalDays)];
+  }
+
+  const serviceDurations = activeServicesDocs
+    .map((s) => Number(s.data?.durationMinutes ?? 0))
+    .filter((d) => Number.isFinite(d) && d > 0);
+  const minServiceDurationMinutes =
+    serviceDurations.length > 0 ? Math.min(...serviceDurations) : undefined;
+
+  const existingAppointments = appointmentsDocs.map((doc) => {
+    const d = doc.data ?? {};
+    return {
+      id: doc.id,
+      barberId: String(d.barberId ?? ''),
+      date: String(d.date ?? ''),
+      startTime: String(d.startTime ?? ''),
+      endTime: String(d.endTime ?? ''),
+      status: String(d.status ?? ''),
+      clientName: d.clientName ? String(d.clientName) : undefined,
+    };
+  });
+
+  const existingBlocks = dayBlocksDocs.map((doc) => {
+    const d = doc.data ?? {};
+    return {
+      id: doc.id,
+      barberId: String(d.barberId ?? ''),
+      date: String(d.date ?? ''),
+      allDay: Boolean(d.allDay),
+      startTime: d.startTime ? String(d.startTime) : undefined,
+      endTime: d.endTime ? String(d.endTime) : undefined,
+    };
+  });
+
+  const validation = validateAndComputeBlockedSlots({
+    barberId: effectiveBarberId,
+    date,
+    allDay,
+    startTime: allDay ? undefined : startTime,
+    endTime: allDay ? undefined : endTime,
+    daySchedules,
+    slotIntervalMinutes,
+    minServiceDurationMinutes,
+    existingAppointments,
+    existingBlocks,
+    excludeBlockId: blockId,
+    actionVerb: 'actualizado',
+  });
+
+  if (!validation.ok) {
+    if (validation.status === 409) {
+      throw new BarberBlockConflictError(validation.error, validation.code);
+    }
+    throw new BarberBlockValidationError(validation.error);
+  }
+
+  const updateData: Record<string, unknown> = {
+    date,
+    allDay,
+    reason,
+    ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
+  };
+
+  const deleteFields: string[] = [];
+  if (allDay) {
+    if ('startTime' in existingData) deleteFields.push('startTime');
+    if ('endTime' in existingData) deleteFields.push('endTime');
+  }
+
+  if (!isBarberRole) {
+    updateData.barberId = effectiveBarberId;
+    if (effectiveBarberUid) {
+      updateData.barberUid = effectiveBarberUid;
+    } else if ('barberUid' in existingData) {
+      deleteFields.push('barberUid');
+    }
+  }
+
+  await serverUpdateDoc(
+    'bloqueos',
+    blockId,
+    updateData,
+    { deleteFields },
+    idToken
+  );
+
+  const block: ScheduleBlock = {
+    id: blockId,
+    barberId: effectiveBarberId,
+    ...(effectiveBarberUid ? { barberUid: effectiveBarberUid } : {}),
+    date,
+    allDay,
+    ...(!allDay && startTime && endTime ? { startTime, endTime } : {}),
+    reason,
+    createdBy: String(existingData.createdBy ?? session.uid),
+    createdAt: serializeTimestamp(existingData.createdAt),
   };
 
   return {

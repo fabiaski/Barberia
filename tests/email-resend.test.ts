@@ -91,6 +91,10 @@ test('Plantillas HTML/texto de confirmación, reprogramación y cancelación esc
   assert.match(manageUrl, /^https:\/\/barberia\.test\/reservar\?gestionar=1&token=/);
   assert.doesNotMatch(clientPayload.html, /<script>/);
   assert.match(clientPayload.html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(clientPayload.html, /Tu reserva fue recibida exitosamente en:/);
+  assert.match(clientPayload.html, /DATOS DE TU CITA/);
+  assert.match(clientPayload.html, /RESUMEN DE SERVICIOS/);
+  assert.match(clientPayload.html, /20 de noviembre del 2026/);
   assert.match(clientPayload.html, /BE-9X4K2M/);
   assert.match(clientPayload.html, /2:30 PM/);
   assert.match(clientPayload.html, /3:15 PM/);
@@ -221,6 +225,28 @@ test('Integración Resend envía confirmación y cancelación al cliente y al eq
   assert.equal(sentPayloads.length, 4);
   assert.match(sentPayloads[2]?.subject ?? '', /Cita cancelada \(BE-9X4K2M\)/);
   assert.match(sentPayloads[2]?.html ?? '', /equipo de la barbería/);
+
+  // Prueba con mismo correo para cliente y barbero/admin: ambos correos deben despacharse
+  const sameEmailPayloads: Array<{ to: string | string[]; subject: string }> = [];
+  const sameEmailClient: ResendLikeClient = {
+    emails: {
+      async send(payload) {
+        sameEmailPayloads.push({ to: payload.to, subject: payload.subject });
+        return { data: { id: `same_${sameEmailPayloads.length}` }, error: null };
+      },
+    },
+  };
+  const sameEmailConfirm = await sendBookingConfirmationEmails({
+    summary: { ...SAMPLE_SUMMARY, clientEmail: 'dueno@barberiaestudio.co' },
+    resendClient: sameEmailClient,
+    skipShopLookup: true,
+    shopOverride: {
+      adminNotificationEmail: 'dueno@barberiaestudio.co',
+    },
+  });
+  assert.equal(sameEmailConfirm.clientSent, true);
+  assert.equal(sameEmailConfirm.staffSent, true);
+  assert.equal(sameEmailPayloads.length, 2);
 
   // Reprogramación
   const rescheduleResult = await sendBookingRescheduledEmails({

@@ -25,6 +25,9 @@ import { getUpcomingBookingDates } from '@/lib/utils/schedule-slots';
 import {
   formatCurrencyCOP,
   formatTime12h,
+  getBogotaDateString,
+  getBogotaTimeString,
+  timeToMinutes,
 } from '@/lib/utils/timezone';
 import {
   parseJsonResponseSafe,
@@ -39,6 +42,14 @@ interface ManageBookingPanelProps {
   initialSummary?: PublicBookingSummary | null;
   onClearInitialSummary?: () => void;
   onSwitchToBook?: () => void;
+}
+
+function readBogotaClock(): { date: string; minutes: number } {
+  const now = new Date();
+  return {
+    date: getBogotaDateString(now),
+    minutes: timeToMinutes(getBogotaTimeString(now)),
+  };
 }
 
 export function ManageBookingPanel({
@@ -66,11 +77,17 @@ export function ManageBookingPanel({
   // Cancelación en dos pasos (sin window.confirm)
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
+  const [bogotaClock, setBogotaClock] = useState<{
+    date: string;
+    minutes: number;
+  }>(() => readBogotaClock());
+
   // Reprogramación
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const upcomingDates = useMemo(
     () => getUpcomingBookingDates(schedule.days, 21),
-    [schedule.days]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [schedule.days, bogotaClock.date]
   );
   const [datePageIndex, setDatePageIndex] = useState(0);
   const datesPerPage = 7;
@@ -105,6 +122,39 @@ export function ManageBookingPanel({
 
   const isSlotsLoading =
     rescheduleOpen && Boolean(summary) && liveSlots?.key !== slotQueryKey;
+
+  useEffect(() => {
+    const syncClock = () => {
+      const next = readBogotaClock();
+      setBogotaClock((prev) =>
+        prev.date === next.date && prev.minutes === next.minutes ? prev : next
+      );
+    };
+
+    const clockTimer = window.setInterval(syncClock, 10000);
+    window.addEventListener('focus', syncClock);
+    document.addEventListener('visibilitychange', syncClock);
+    return () => {
+      window.clearInterval(clockTimer);
+      window.removeEventListener('focus', syncClock);
+      document.removeEventListener('visibilitychange', syncClock);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rescheduleOpen) return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshNonce((n) => n + 1);
+      }
+    };
+    const timer = window.setInterval(refreshIfVisible, 30000);
+    window.addEventListener('focus', refreshIfVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshIfVisible);
+    };
+  }, [rescheduleOpen]);
 
   useEffect(() => {
     if (!rescheduleOpen || !summary || !newDate || !newBarberId) return;
@@ -143,10 +193,15 @@ export function ManageBookingPanel({
 
   const availableSlots = useMemo(() => {
     if (liveSlots && liveSlots.key === slotQueryKey) {
-      return liveSlots.slots;
+      if (newDate !== bogotaClock.date) {
+        return liveSlots.slots;
+      }
+      return liveSlots.slots.filter(
+        (slot) => timeToMinutes(slot) > bogotaClock.minutes
+      );
     }
     return [];
-  }, [liveSlots, slotQueryKey]);
+  }, [liveSlots, slotQueryKey, newDate, bogotaClock.date, bogotaClock.minutes]);
 
   const effectiveNewTime = availableSlots.includes(newTime)
     ? newTime
@@ -463,6 +518,11 @@ export function ManageBookingPanel({
 
   const isCancelled = summary.status === AppointmentStatus.CANCELLED;
   const isCompleted = summary.status === AppointmentStatus.COMPLETED;
+  const canModifyLive =
+    summary.canModify &&
+    (summary.date > bogotaClock.date ||
+      (summary.date === bogotaClock.date &&
+        timeToMinutes(summary.startTime) > bogotaClock.minutes));
 
   return (
     <div className="mx-auto max-w-3xl rounded-2xl border border-stone-800 bg-stone-900 p-6 sm:p-8">
@@ -591,7 +651,7 @@ export function ManageBookingPanel({
         )}
       </dl>
 
-      {summary.canModify && (
+      {canModifyLive && (
         <div className="mt-6 flex flex-wrap gap-3">
           <button
             type="button"
@@ -625,7 +685,7 @@ export function ManageBookingPanel({
         </div>
       )}
 
-      {!summary.canModify && !isCancelled && !isCompleted && (
+      {!canModifyLive && !isCancelled && !isCompleted && (
         <p className="mt-5 text-xs text-stone-400">
           Esta reserva ya no puede modificarse en línea porque el horario ya
           inició o cambió de estado.
@@ -633,7 +693,7 @@ export function ManageBookingPanel({
       )}
 
       {/* Confirmación inline de cancelación */}
-      {confirmCancelOpen && summary.canModify && (
+      {confirmCancelOpen && canModifyLive && (
         <div className="mt-5 rounded-xl border border-red-900/60 bg-stone-950 p-5">
           <p className="text-sm font-semibold text-white">
             ¿Confirmas que deseas cancelar esta cita?
@@ -670,7 +730,7 @@ export function ManageBookingPanel({
       )}
 
       {/* Reprogramación inline */}
-      {rescheduleOpen && summary.canModify && (
+      {rescheduleOpen && canModifyLive && (
         <div className="mt-6 rounded-xl border border-stone-800 bg-stone-950 p-5 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-white">

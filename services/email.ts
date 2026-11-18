@@ -47,6 +47,8 @@ export interface EmailDispatchResult {
 export interface EmailServiceStatus {
   resendConfigured: boolean;
   fromEmail: string;
+  isSandboxSender: boolean;
+  hasAdminServiceAccount: boolean;
   envAdminNotificationEmail: string;
   appUrl: string;
 }
@@ -59,9 +61,12 @@ function getResendClient(override?: ResendLikeClient): ResendLikeClient | null {
 }
 
 export function getEmailServiceStatus(): EmailServiceStatus {
+  const fromEmail = getConfiguredFromEmail();
   return {
     resendConfigured: Boolean(cleanEnvValue(process.env.RESEND_API_KEY)),
-    fromEmail: getConfiguredFromEmail(),
+    fromEmail,
+    isSandboxSender: fromEmail.toLowerCase().includes('onboarding@resend.dev'),
+    hasAdminServiceAccount: hasAdminServiceAccount(),
     envAdminNotificationEmail: cleanEnvValue(
       process.env.ADMIN_NOTIFICATION_EMAIL
     ),
@@ -73,7 +78,6 @@ async function resolveShopAndStaffRecipients(params: {
   barberId?: string;
   barberUid?: string;
   idToken?: string;
-  excludeEmail?: string;
   shopOverride?: Partial<ShopEmailContext>;
   skipShopLookup?: boolean;
 }): Promise<{ shop: ShopEmailContext; staffRecipients: string[] }> {
@@ -147,9 +151,13 @@ async function resolveShopAndStaffRecipients(params: {
         const barberEmail = String(userSnap.data?.email ?? '')
           .trim()
           .toLowerCase();
+        const syntheticFallback = params.barberId
+          ? `${params.barberId}@barberiaestudio.co`
+          : '';
         if (
           isValidDeliverableEmail(barberEmail) &&
-          !barberEmail.endsWith('@barberiaestudio.co')
+          barberEmail !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail &&
+          barberEmail !== syntheticFallback
         ) {
           staffSet.add(barberEmail);
         }
@@ -159,8 +167,15 @@ async function resolveShopAndStaffRecipients(params: {
     }
   }
 
-  if (params.excludeEmail) {
-    staffSet.delete(params.excludeEmail.trim().toLowerCase());
+  // Si no se resolvió ningún correo de barbero o administrador, usar el correo público
+  // configurado de la barbería (cuando difiere del valor genérico de plantilla).
+  if (
+    !params.skipShopLookup &&
+    staffSet.size === 0 &&
+    isValidDeliverableEmail(shop.shopEmail) &&
+    shop.shopEmail.trim().toLowerCase() !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail
+  ) {
+    staffSet.add(shop.shopEmail.trim().toLowerCase());
   }
 
   return {
@@ -186,6 +201,7 @@ async function safeSendSingleEmail(
         : {}),
     });
     if (response?.error) {
+      console.warn('[Resend] Envío rechazado:', response.error.message);
       return {
         ok: false,
         error: translateErrorMessageEs(
@@ -196,6 +212,7 @@ async function safeSendSingleEmail(
     }
     return { ok: true };
   } catch (err) {
+    console.warn('[Resend] Excepción al enviar correo:', err);
     return {
       ok: false,
       error: translateErrorMessageEs(
@@ -243,7 +260,6 @@ export async function sendBookingConfirmationEmails(params: {
       barberId: summary.barberId,
       barberUid,
       idToken,
-      excludeEmail: summary.clientEmail,
       shopOverride,
       skipShopLookup,
     });
@@ -352,7 +368,6 @@ export async function sendBookingRescheduledEmails(params: {
       barberId: summary.barberId,
       barberUid,
       idToken,
-      excludeEmail: summary.clientEmail,
       shopOverride,
       skipShopLookup,
     });
@@ -460,7 +475,6 @@ export async function sendBookingCancelledEmails(params: {
       barberId: summary.barberId,
       barberUid,
       idToken,
-      excludeEmail: summary.clientEmail,
       shopOverride,
       skipShopLookup,
     });

@@ -34,6 +34,8 @@ import { getUpcomingBookingDates } from '@/lib/utils/schedule-slots';
 import {
   formatCurrencyCOP,
   formatTime12h,
+  getBogotaDateString,
+  getBogotaTimeString,
   minutesToTime,
   timeToMinutes,
 } from '@/lib/utils/timezone';
@@ -54,6 +56,14 @@ interface LiveAvailabilityPayload {
   requestKey: string;
   availableSlots: string[];
   reason?: string;
+}
+
+function readBogotaClock(): { date: string; minutes: number } {
+  const now = new Date();
+  return {
+    date: getBogotaDateString(now),
+    minutes: timeToMinutes(getBogotaTimeString(now)),
+  };
 }
 
 export function BookingWizard({
@@ -83,9 +93,15 @@ export function BookingWizard({
   );
   const [barberMenuOpen, setBarberMenuOpen] = useState(false);
 
+  const [bogotaClock, setBogotaClock] = useState<{
+    date: string;
+    minutes: number;
+  }>(() => readBogotaClock());
+
   const upcomingDates = useMemo(
     () => getUpcomingBookingDates(schedule.days, 21),
-    [schedule.days]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [schedule.days, bogotaClock.date]
   );
 
   const firstOpenDate = useMemo(
@@ -113,6 +129,7 @@ export function BookingWizard({
   const [confirmedSummary, setConfirmedSummary] =
     useState<PublicBookingSummary | null>(null);
   const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
+  const [confirmationEmailWarning, setConfirmationEmailWarning] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -152,6 +169,25 @@ export function BookingWizard({
     Boolean(selectedDate && selectedServiceId && selectedBarberId) &&
     liveAvailability?.requestKey !== availabilityRequestKey;
 
+  // Reloj en tiempo real (America/Bogota) para ocultar de inmediato turnos vencidos
+  useEffect(() => {
+    const syncClock = () => {
+      const next = readBogotaClock();
+      setBogotaClock((prev) =>
+        prev.date === next.date && prev.minutes === next.minutes ? prev : next
+      );
+    };
+
+    const clockTimer = window.setInterval(syncClock, 10000);
+    window.addEventListener('focus', syncClock);
+    document.addEventListener('visibilitychange', syncClock);
+    return () => {
+      window.clearInterval(clockTimer);
+      window.removeEventListener('focus', syncClock);
+      document.removeEventListener('visibilitychange', syncClock);
+    };
+  }, []);
+
   useEffect(() => {
     if (mode !== 'book' || step !== 2) return;
 
@@ -161,9 +197,11 @@ export function BookingWizard({
       }
     };
 
+    const refreshTimer = window.setInterval(refreshIfVisible, 30000);
     window.addEventListener('focus', refreshIfVisible);
     document.addEventListener('visibilitychange', refreshIfVisible);
     return () => {
+      window.clearInterval(refreshTimer);
       window.removeEventListener('focus', refreshIfVisible);
       document.removeEventListener('visibilitychange', refreshIfVisible);
     };
@@ -237,11 +275,22 @@ export function BookingWizard({
   ]);
 
   const availableSlots = useMemo(() => {
-    if (liveAvailability?.requestKey === availabilityRequestKey) {
+    if (liveAvailability?.requestKey !== availabilityRequestKey) {
+      return [];
+    }
+    if (selectedDate !== bogotaClock.date) {
       return liveAvailability.availableSlots;
     }
-    return [];
-  }, [liveAvailability, availabilityRequestKey]);
+    return liveAvailability.availableSlots.filter(
+      (slot) => timeToMinutes(slot) > bogotaClock.minutes
+    );
+  }, [
+    liveAvailability,
+    availabilityRequestKey,
+    selectedDate,
+    bogotaClock.date,
+    bogotaClock.minutes,
+  ]);
 
   const morningSlots = useMemo(
     () => availableSlots.filter((slot) => timeToMinutes(slot) < 12 * 60),
@@ -267,9 +316,18 @@ export function BookingWizard({
   const displayedSlots =
     activePeriod === 'morning' ? morningSlots : afternoonSlots;
 
-  const effectiveTime = availableSlots.includes(selectedTime)
-    ? selectedTime
-    : displayedSlots[0] ?? availableSlots[0] ?? '';
+  const isSelectedSlotExpired =
+    Boolean(selectedTime) &&
+    (selectedDate < bogotaClock.date ||
+      (selectedDate === bogotaClock.date &&
+        timeToMinutes(selectedTime) <= bogotaClock.minutes));
+
+  const effectiveTime =
+    step === 3 && isSelectedSlotExpired
+      ? ''
+      : availableSlots.includes(selectedTime)
+        ? selectedTime
+        : displayedSlots[0] ?? availableSlots[0] ?? '';
 
   const computedEndTime = useMemo(() => {
     if (!effectiveTime || !activeService) return '';
@@ -335,14 +393,27 @@ export function BookingWizard({
         setSlotError('Selecciona una hora disponible para continuar.');
         return;
       }
+      setSelectedTime(effectiveTime);
       setSlotError('');
       setStep(3);
     }
   };
 
   const onConfirmSubmit = async (data: BookingContactFormInput) => {
-    if (!activeService || !selectedDate || !effectiveTime) {
-      setSlotError('Selecciona fecha y hora válidas.');
+    const latestClock = readBogotaClock();
+    const expiredRightNow =
+      !effectiveTime ||
+      selectedDate < latestClock.date ||
+      (selectedDate === latestClock.date &&
+        timeToMinutes(effectiveTime) <= latestClock.minutes);
+
+    if (!activeService || !selectedDate || expiredRightNow) {
+      setBogotaClock(latestClock);
+      setSelectedTime('');
+      setSlotError(
+        'El horario elegido ya transcurrió. Por favor selecciona otro turno disponible.'
+      );
+      setAvailabilityRefreshNonce((n) => n + 1);
       setStep(2);
       return;
     }
@@ -369,7 +440,14 @@ export function BookingWizard({
       const rawText = await response.text();
       let payload: {
         summary?: PublicBookingSummary;
-        emailNotification?: { sent?: boolean; clientSent?: boolean };
+        emailNotification?: {
+          sent?: boolean;
+          clientSent?: boolean;
+          skipped?: boolean;
+          reason?: string;
+          clientError?: string;
+          error?: string;
+        };
         error?: string;
         code?: string;
       } = {};
@@ -390,12 +468,17 @@ export function BookingWizard({
         return;
       }
 
+      const emailWasSentToClient = Boolean(
+        payload.emailNotification?.clientSent ??
+          payload.emailNotification?.sent
+      );
       setConfirmedSummary(payload.summary);
-      setConfirmationEmailSent(
-        Boolean(
-          payload.emailNotification?.clientSent ??
-            payload.emailNotification?.sent
-        )
+      setConfirmationEmailSent(emailWasSentToClient);
+      setConfirmationEmailWarning(
+        !emailWasSentToClient
+          ? payload.emailNotification?.clientError ||
+              'No pudimos enviar el comprobante por correo en este momento, pero tu cita ya quedó confirmada en nuestra agenda.'
+          : ''
       );
       setAvailabilityRefreshNonce((n) => n + 1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -414,6 +497,7 @@ export function BookingWizard({
   const handleReset = () => {
     setConfirmedSummary(null);
     setConfirmationEmailSent(false);
+    setConfirmationEmailWarning('');
     setSubmitError(null);
     setStep(1);
     setSlotError('');
@@ -608,7 +692,7 @@ export function BookingWizard({
                   </span>
                   . Guarda tu código de reserva por si necesitas reprogramar o
                   cancelar tu turno.
-                  {confirmationEmailSent && (
+                  {confirmationEmailSent ? (
                     <>
                       {' '}
                       También enviamos el comprobante con enlace directo a{' '}
@@ -617,7 +701,11 @@ export function BookingWizard({
                       </span>
                       .
                     </>
-                  )}
+                  ) : confirmationEmailWarning ? (
+                    <span className="mt-2 block text-xs text-amber-300">
+                      {confirmationEmailWarning}
+                    </span>
+                  ) : null}
                 </p>
 
                 {/* Código de reserva destacado */}
@@ -1076,7 +1164,10 @@ export function BookingWizard({
                             availabilityRequestKey &&
                           liveAvailability.reason
                             ? liveAvailability.reason
-                            : 'Sin horas para reservar en esta jornada. Selecciona la otra pestaña o cambia el día.'}
+                            : availableSlots.length === 0 &&
+                                selectedDate === bogotaClock.date
+                              ? 'No quedan horarios disponibles para hoy. Selecciona otro día en el calendario.'
+                              : 'Sin horas para reservar en esta jornada. Selecciona la otra pestaña o cambia el día.'}
                         </p>
                       ) : (
                         <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-5">
@@ -1136,6 +1227,30 @@ export function BookingWizard({
                     </span>
                     .
                   </p>
+
+                  {isSelectedSlotExpired && (
+                    <div
+                      role="alert"
+                      className="mt-5 rounded-xl border border-amber-800/60 bg-amber-950/40 p-4 text-xs text-amber-200"
+                    >
+                      <p>
+                        El horario que habías elegido ({formatTime12h(selectedTime)}) ya
+                        transcurrió en horario de Colombia. Elige otra franja disponible
+                        para continuar.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTime('');
+                          setAvailabilityRefreshNonce((n) => n + 1);
+                          setStep(2);
+                        }}
+                        className="mt-2.5 inline-flex min-h-[36px] items-center rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-500"
+                      >
+                        Elegir otro horario
+                      </button>
+                    </div>
+                  )}
 
                   {submitError && (
                     <div
@@ -1369,7 +1484,7 @@ export function BookingWizard({
                 <button
                   type="submit"
                   form="booking-contact-form"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isSelectedSlotExpired}
                   className="mt-5 inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl bg-amber-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmitting ? (

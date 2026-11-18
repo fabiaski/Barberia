@@ -4,7 +4,9 @@ import {
   serverGetDoc,
   serverQueryCollection,
 } from '@/lib/firestore-server';
+import { partitionExpiredScheduleBlocks } from '@/lib/utils/schedule-blocks';
 import { getBogotaDateString } from '@/lib/utils/timezone';
+import { deleteExpiredBlockIds } from '@/services/barbero';
 import {
   AppointmentStatus,
   type Appointment,
@@ -228,9 +230,14 @@ export async function getAdminSchedulesAndBlocks(idToken?: string): Promise<{
   blocks: ScheduleBlock[];
   barbers: AdminBarberRecord[];
 }> {
+  const todayBogota = getBogotaDateString(new Date());
   const [generalDoc, blocksDocs, barbers] = await Promise.all([
     serverGetDoc('horarios', 'general', idToken),
-    serverQueryCollection('bloqueos', {}, idToken),
+    serverQueryCollection(
+      'bloqueos',
+      { filters: [{ field: 'date', op: '>=', value: '1970-01-01' }] },
+      idToken
+    ),
     listAdminBarbers(idToken),
   ]);
 
@@ -251,23 +258,39 @@ export async function getAdminSchedulesAndBlocks(idToken?: string): Promise<{
     updatedAt: serializeTimestamp(scheduleData?.updatedAt),
   };
 
-  const blocks: ScheduleBlock[] = blocksDocs
-    .map((doc) => {
-      const d = doc.data ?? {};
-      return {
-        id: doc.id,
-        barberId: String(d.barberId ?? 'all'),
-        barberUid: d.barberUid ? String(d.barberUid) : undefined,
-        date: String(d.date ?? ''),
-        allDay: Boolean(d.allDay),
-        startTime: d.startTime ? String(d.startTime) : undefined,
-        endTime: d.endTime ? String(d.endTime) : undefined,
-        reason: String(d.reason ?? ''),
-        createdBy: String(d.createdBy ?? ''),
-        createdAt: serializeTimestamp(d.createdAt),
-      };
-    })
-    .sort((a, b) => b.date.localeCompare(a.date));
+  const mappedBlocks: ScheduleBlock[] = blocksDocs.map((doc) => {
+    const d = doc.data ?? {};
+    return {
+      id: doc.id,
+      barberId: String(d.barberId ?? 'all'),
+      barberUid: d.barberUid ? String(d.barberUid) : undefined,
+      date: String(d.date ?? ''),
+      allDay: Boolean(d.allDay),
+      startTime: d.startTime ? String(d.startTime) : undefined,
+      endTime: d.endTime ? String(d.endTime) : undefined,
+      reason: String(d.reason ?? ''),
+      createdBy: String(d.createdBy ?? ''),
+      createdAt: serializeTimestamp(d.createdAt),
+    };
+  });
+
+  const { activeBlocks, expiredBlocks } = partitionExpiredScheduleBlocks(
+    mappedBlocks,
+    todayBogota
+  );
+
+  if (expiredBlocks.length > 0) {
+    await deleteExpiredBlockIds(
+      expiredBlocks.map((b) => b.id),
+      idToken
+    );
+  }
+
+  const blocks = activeBlocks.sort((a, b) =>
+    `${a.date}_${a.startTime ?? '00:00'}`.localeCompare(
+      `${b.date}_${b.startTime ?? '00:00'}`
+    )
+  );
 
   return {
     generalSchedule,

@@ -8,6 +8,8 @@ import {
 } from '@/lib/auth/manage-token';
 import { generateScheduleTimeSlots } from '@/lib/utils/schedule-slots';
 import {
+  isExpiredScheduleBlock,
+  partitionExpiredScheduleBlocks,
   resolveEffectiveDaySchedule,
   validateAndComputeBlockedSlots,
 } from '@/lib/utils/schedule-blocks';
@@ -97,6 +99,38 @@ test('Generación de franjas horarias respeta apertura, cierre, duración y paus
     intervalMinutes: 30,
   });
   assert.deepEqual(closedSlots, []);
+
+  // Turnos del día actual (America/Bogota = UTC-5): a las 12:29 el turno de 12:30 aparece;
+  // a las 12:30 o 12:31 (17:30Z / 17:31Z) el turno de 12:30 ya no debe aparecer.
+  const todayOpen: DaySchedule = {
+    dayOfWeek: 5,
+    isOpen: true,
+    openTime: '08:00',
+    closeTime: '15:00',
+  };
+  const at1229Bogota = new Date('2026-11-20T17:29:00.000Z');
+  const at1231Bogota = new Date('2026-11-20T17:31:00.000Z');
+
+  const slotsAt1229 = generateScheduleTimeSlots({
+    date: '2026-11-20',
+    daySchedule: todayOpen,
+    durationMinutes: 30,
+    intervalMinutes: 30,
+    now: at1229Bogota,
+  });
+  assert.equal(slotsAt1229.includes('12:00'), false);
+  assert.equal(slotsAt1229.includes('12:30'), true);
+  assert.equal(slotsAt1229.includes('13:00'), true);
+
+  const slotsAt1231 = generateScheduleTimeSlots({
+    date: '2026-11-20',
+    daySchedule: todayOpen,
+    durationMinutes: 30,
+    intervalMinutes: 30,
+    now: at1231Bogota,
+  });
+  assert.equal(slotsAt1231.includes('12:30'), false);
+  assert.equal(slotsAt1231.includes('13:00'), true);
 });
 
 test('Granularidad de candados de ocupación (5 minutos) sin falsos positivos en citas contiguas', () => {
@@ -489,7 +523,7 @@ test('Utilidad WhatsApp normaliza teléfonos colombianos y genera enlace wa.me c
   );
 });
 
-test('Reglas de Firestore permiten lectura pública de bloqueos por fecha y horarios personalizados por barbero', () => {
+test('Reglas de Firestore permiten lectura pública de bloqueos por fecha, consultas de barberos/admin y horarios personalizados por barbero', () => {
   const rulesText = fs.readFileSync(
     path.join(process.cwd(), 'firestore.rules'),
     'utf8'
@@ -500,7 +534,7 @@ test('Reglas de Firestore permiten lectura pública de bloqueos por fecha y hora
   );
   assert.match(
     rulesText,
-    /match \/bloqueos\/\{blockId\}[\s\S]*?allow list:\s*if resource\.data\.date is string && resource\.data\.date\.size\(\) == 10;/
+    /match \/bloqueos\/\{blockId\}[\s\S]*?allow list:[\s\S]*?resource\.data\.date is string && resource\.data\.date\.size\(\) == 10[\s\S]*?resource\.data\.barberUid == request\.auth\.uid/
   );
 });
 
@@ -692,5 +726,60 @@ test('Bloqueos personales validan fechas, citas activas, duplicados y calculan t
     assert.equal(allDayRes.deactivatedSlots[0], '09:00');
     assert.equal(allDayRes.deactivatedSlots[15], '16:30');
   }
+
+  // 7. Edición de bloqueo existente excluye su propio ID y permite ampliar o cambiar motivo sin falso duplicado
+  const editSameBlockRes = validateAndComputeBlockedSlots({
+    barberId: 'barbero-1',
+    date: '2026-11-20',
+    allDay: false,
+    startTime: '12:00',
+    endTime: '15:00',
+    daySchedules: [openDay],
+    slotIntervalMinutes: 30,
+    existingAppointments: [],
+    existingBlocks: [
+      {
+        id: 'bl-1',
+        barberId: 'barbero-1',
+        date: '2026-11-20',
+        allDay: false,
+        startTime: '12:00',
+        endTime: '14:00',
+      },
+    ],
+    excludeBlockId: 'bl-1',
+    actionVerb: 'actualizado',
+    now: fixedNow,
+  });
+  assert.equal(editSameBlockRes.ok, true);
+  if (editSameBlockRes.ok) {
+    assert.equal(editSameBlockRes.deactivatedCount, 6);
+    assert.match(editSameBlockRes.summaryMessage, /^Bloqueo actualizado\./);
+  }
+});
+
+test('Bloqueos de días pasados se identifican y separan automáticamente para depuración', () => {
+  assert.equal(isExpiredScheduleBlock('2026-11-13', '2026-11-14'), true);
+  assert.equal(isExpiredScheduleBlock('2026-11-14', '2026-11-14'), false);
+  assert.equal(isExpiredScheduleBlock('2026-11-15', '2026-11-14'), false);
+
+  const { activeBlocks, expiredBlocks } = partitionExpiredScheduleBlocks(
+    [
+      { id: 'b-ayer', date: '2026-11-13' },
+      { id: 'b-pasado', date: '2026-10-01' },
+      { id: 'b-hoy', date: '2026-11-14' },
+      { id: 'b-manana', date: '2026-11-15' },
+    ],
+    '2026-11-14'
+  );
+
+  assert.deepEqual(
+    expiredBlocks.map((b) => b.id),
+    ['b-ayer', 'b-pasado']
+  );
+  assert.deepEqual(
+    activeBlocks.map((b) => b.id),
+    ['b-hoy', 'b-manana']
+  );
 });
 

@@ -101,6 +101,184 @@ export function formatDateBogotaEs(dateStr: string): string {
   }).format(d);
 }
 
+export function formatDateReceiptLongEs(dateStr: string): string {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) return dateStr;
+  const monthsEs = [
+    'enero',
+    'febrero',
+    'marzo',
+    'abril',
+    'mayo',
+    'junio',
+    'julio',
+    'agosto',
+    'septiembre',
+    'octubre',
+    'noviembre',
+    'diciembre',
+  ];
+  const monthName = monthsEs[month - 1];
+  if (!monthName) return formatDateBogotaEs(dateStr);
+  return `${day} de ${monthName} del ${year}`;
+}
+
+function getShopMonogram(shopName: string): string {
+  const words = shopName
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+  if (words.length >= 2) {
+    return `${words[0][0]}${words[1][0]}`.toUpperCase();
+  }
+  return (words[0]?.slice(0, 2) || 'BE').toUpperCase();
+}
+
+export function buildClientReceiptEmailLayout(params: {
+  shop: ShopEmailContext;
+  preheader: string;
+  title: string;
+  greetingName: string;
+  subtitleLine: string;
+  statusNote?: string;
+  accentTone?: 'blue' | 'red';
+  appointmentDetails: Array<{ label: string; value: string }>;
+  serviceName: string;
+  serviceDurationLabel: string;
+  serviceBarberLabel: string;
+  servicePriceLabel: string;
+  notes?: string;
+  ctaLabel: string;
+  ctaUrl: string;
+}): string {
+  const isRed = params.accentTone === 'red';
+  const boxBg = isRed ? '#fef2f2' : '#eef4ff';
+  const boxBorder = isRed ? '#fecaca' : '#dbeafe';
+  const labelColor = isRed ? '#991b1b' : '#1e3a8a';
+  const valueColor = isRed ? '#dc2626' : '#1d4ed8';
+  const brandColor = isRed ? '#dc2626' : '#1a6bff';
+  const monogram = getShopMonogram(params.shop.shopName);
+
+  const detailsHtml = params.appointmentDetails
+    .map(
+      (item, index) => `
+        <p style="margin:${index === 0 ? '0' : '8px 0 0 0'};font-size:13px;line-height:1.5;color:${valueColor};">
+          <strong style="color:${labelColor};font-weight:700;">${escapeHtml(item.label)}:</strong>
+          <span> ${escapeHtml(item.value)}</span>
+        </p>`
+    )
+    .join('');
+
+  const notesHtml = params.notes
+    ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6;font-size:12px;line-height:1.5;color:#4b5563;">
+        <strong style="color:#111827;">Indicaciones:</strong> ${escapeHtml(params.notes)}
+      </div>`
+    : '';
+
+  const statusNoteHtml = params.statusNote
+    ? `<p style="margin:10px auto 0 auto;max-width:440px;font-size:12px;line-height:1.55;color:#4b5563;text-align:center;">
+        ${escapeHtml(params.statusNote)}
+      </p>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(params.title)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;">
+  <span style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(params.preheader)}</span>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f3f4f6;padding:32px 14px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:540px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
+          <tr>
+            <td style="padding:34px 28px 28px 28px;">
+              <!-- Emblema superior centrado -->
+              <table role="presentation" cellspacing="0" cellpadding="0" align="center" style="margin:0 auto 18px auto;">
+                <tr>
+                  <td align="center" valign="middle" style="width:46px;height:46px;border-radius:12px;border:2px solid ${brandColor};background-color:${isRed ? '#fff5f5' : '#eff6ff'};font-size:16px;font-weight:800;letter-spacing:0.04em;color:${brandColor};text-align:center;">
+                    ${escapeHtml(monogram)}
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Saludo y nombre de la barbería -->
+              <h1 style="margin:0;font-size:22px;line-height:1.3;font-weight:700;color:#111827;text-align:center;">
+                Hola ${escapeHtml(params.greetingName)}
+              </h1>
+              <p style="margin:8px 0 0 0;font-size:13px;line-height:1.5;color:#4b5563;text-align:center;">
+                ${escapeHtml(params.subtitleLine)}
+              </p>
+              <p style="margin:3px 0 0 0;font-size:13px;line-height:1.4;font-weight:800;letter-spacing:0.03em;color:#111827;text-transform:uppercase;text-align:center;">
+                ${escapeHtml(params.shop.shopName)}
+              </p>
+              ${statusNoteHtml}
+
+              <!-- Sección 1: DATOS DE TU CITA -->
+              <div style="margin:26px 0 9px 0;font-size:11px;font-weight:600;letter-spacing:0.06em;color:#6b7280;text-transform:uppercase;">
+                DATOS DE TU CITA
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${boxBg};border:1px solid ${boxBorder};border-radius:10px;">
+                <tr>
+                  <td style="padding:16px 18px;">
+                    ${detailsHtml}
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Sección 2: RESUMEN DE SERVICIOS -->
+              <div style="margin:22px 0 9px 0;font-size:11px;font-weight:600;letter-spacing:0.06em;color:#6b7280;text-transform:uppercase;">
+                RESUMEN DE SERVICIOS
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#ffffff;border:1px solid #e5e7eb;border-radius:10px;">
+                <tr>
+                  <td style="padding:16px 18px;">
+                    <div style="font-size:13px;font-weight:700;letter-spacing:0.02em;color:#111827;text-transform:uppercase;">
+                      ${escapeHtml(params.serviceName)}
+                    </div>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:8px;">
+                      <tr>
+                        <td style="font-size:12px;color:#4b5563;vertical-align:middle;">
+                          ${escapeHtml(params.serviceDurationLabel)} · ${escapeHtml(params.serviceBarberLabel)}
+                        </td>
+                        <td style="font-size:14px;font-weight:700;color:#111827;text-align:right;vertical-align:middle;white-space:nowrap;">
+                          ${escapeHtml(params.servicePriceLabel)}
+                        </td>
+                      </tr>
+                    </table>
+                    ${notesHtml}
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Botón de acción -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:24px;">
+                <tr>
+                  <td align="center">
+                    <a href="${escapeHtml(params.ctaUrl)}" style="display:inline-block;background-color:${brandColor};color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;padding:12px 24px;border-radius:8px;">
+                      ${escapeHtml(params.ctaLabel)}
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f9fafb;padding:16px 28px;border-top:1px solid #e5e7eb;font-size:11px;line-height:1.5;color:#6b7280;text-align:center;">
+              ${escapeHtml(params.shop.shopName)} · ${escapeHtml(params.shop.address)}, ${escapeHtml(params.shop.city)} · Tel: ${escapeHtml(params.shop.phone)} · Horario ${SYSTEM_TIMEZONE}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
 export function buildEmailLayout(params: {
   shopName: string;
   preheader: string;
@@ -205,45 +383,53 @@ export function buildConfirmationEmailPayloads(params: {
   const manageUrl = `${baseUrl}/reservar?gestionar=1&token=${encodeURIComponent(manageToken)}`;
   const panelUrl = `${baseUrl}/login`;
 
-  const formattedDate = formatDateBogotaEs(summary.date);
-  const formattedSchedule = `${formattedDate} · ${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
-  const priceLabel = `${formatCurrencyCOP(summary.priceCop)} · ${summary.durationMinutes} min`;
+  const formattedDateReceipt = formatDateReceiptLongEs(summary.date);
+  const formattedTimeRange = `${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
+  const formattedSchedule = `${formatDateBogotaEs(summary.date)} · ${formattedTimeRange}`;
+  const priceLabel = formatCurrencyCOP(summary.priceCop);
+  const priceDurationLabel = `${priceLabel} · ${summary.durationMinutes} min`;
 
   const clientEmailClean = summary.clientEmail.trim().toLowerCase();
   let clientPayload: EmailMessagePayload | null = null;
 
   if (isValidDeliverableEmail(clientEmailClean)) {
-    const clientHtml = buildEmailLayout({
-      shopName: shop.shopName,
-      preheader: `Tu cita ${summary.bookingCode} quedó confirmada para el ${formattedSchedule}.`,
-      kicker: 'Confirmación de reserva',
-      title: `¡Tu cita está confirmada, ${summary.clientName}!`,
-      intro: `Hemos reservado tu turno en ${shop.shopName}. Conserva tu código de confirmación por si necesitas consultar, reprogramar o cancelar.`,
-      highlightLabel: 'Código de confirmación',
-      highlightValue: summary.bookingCode,
-      rows: [
-        { label: 'Servicio', value: summary.serviceName },
-        { label: 'Valor y duración', value: priceLabel },
-        { label: 'Barbero asignado', value: summary.barberName },
-        { label: 'Fecha y horario', value: formattedSchedule },
-        { label: 'Ubicación', value: `${shop.address}, ${shop.city}` },
-        ...(summary.notes
-          ? [{ label: 'Notas registradas', value: summary.notes }]
-          : []),
+    const clientHtml = buildClientReceiptEmailLayout({
+      shop,
+      preheader: `Tu cita ${summary.bookingCode} quedó confirmada para el ${formattedDateReceipt} a las ${formatTime12h(summary.startTime)}.`,
+      title: `Confirmación de reserva — ${shop.shopName}`,
+      greetingName: summary.clientName,
+      subtitleLine: 'Tu reserva fue recibida exitosamente en:',
+      appointmentDetails: [
+        { label: 'Fecha', value: formattedDateReceipt },
+        { label: 'Hora', value: formattedTimeRange },
+        { label: 'Barbero', value: summary.barberName },
+        { label: 'Dirección', value: `${shop.address} (${shop.city})` },
+        { label: 'Teléfono', value: shop.phone },
+        { label: 'Código de reserva', value: summary.bookingCode },
       ],
+      serviceName: summary.serviceName,
+      serviceDurationLabel: `${summary.durationMinutes} min`,
+      serviceBarberLabel: `Barbero: ${summary.barberName}`,
+      servicePriceLabel: priceLabel,
+      notes: summary.notes,
       ctaLabel: 'Consultar, reprogramar o cancelar cita',
       ctaUrl: manageUrl,
-      footerNote: `${shop.shopName} · ${shop.address}, ${shop.city} · Tel: ${shop.phone}. Horario expresado en ${SYSTEM_TIMEZONE}.`,
     });
 
     const clientText = [
-      `${shop.shopName} — Confirmación de reserva`,
-      `Hola ${summary.clientName}, tu cita quedó confirmada.`,
-      `Código: ${summary.bookingCode}`,
-      `Servicio: ${summary.serviceName} (${priceLabel})`,
+      `Hola ${summary.clientName}`,
+      `Tu reserva fue recibida exitosamente en: ${shop.shopName}`,
+      ``,
+      `DATOS DE TU CITA`,
+      `Fecha: ${formattedDateReceipt}`,
+      `Hora: ${formattedTimeRange}`,
       `Barbero: ${summary.barberName}`,
-      `Fecha y horario: ${formattedSchedule}`,
       `Dirección: ${shop.address}, ${shop.city}`,
+      `Teléfono: ${shop.phone}`,
+      `Código: ${summary.bookingCode}`,
+      ``,
+      `RESUMEN DE SERVICIOS`,
+      `${summary.serviceName} (${priceDurationLabel})`,
       `Gestionar cita: ${manageUrl}`,
     ].join('\n');
 
@@ -271,7 +457,7 @@ export function buildConfirmationEmailPayloads(params: {
         { label: 'Cliente', value: summary.clientName },
         { label: 'Teléfono', value: summary.clientPhone },
         { label: 'Correo', value: summary.clientEmail },
-        { label: 'Servicio', value: `${summary.serviceName} (${priceLabel})` },
+        { label: 'Servicio', value: `${summary.serviceName} (${priceDurationLabel})` },
         { label: 'Barbero', value: summary.barberName },
         { label: 'Fecha y horario', value: formattedSchedule },
         ...(summary.notes
@@ -286,7 +472,7 @@ export function buildConfirmationEmailPayloads(params: {
     const staffText = [
       `Nueva cita agendada (${summary.bookingCode})`,
       `Cliente: ${summary.clientName} (${summary.clientPhone} / ${summary.clientEmail})`,
-      `Servicio: ${summary.serviceName} (${priceLabel})`,
+      `Servicio: ${summary.serviceName} (${priceDurationLabel})`,
       `Barbero: ${summary.barberName}`,
       `Horario: ${formattedSchedule}`,
       `Panel: ${panelUrl}`,
@@ -334,35 +520,44 @@ export function buildRescheduledEmailPayloads(params: {
   const manageUrl = `${baseUrl}/reservar?gestionar=1&token=${encodeURIComponent(manageToken)}`;
   const panelUrl = `${baseUrl}/login`;
 
-  const newSchedule = `${formatDateBogotaEs(summary.date)} · ${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
-  const prevSchedule = `${formatDateBogotaEs(previousDate)} · ${formatTime12h(previousStartTime)} – ${formatTime12h(previousEndTime)}`;
-  const priceLabel = `${formatCurrencyCOP(summary.priceCop)} · ${summary.durationMinutes} min`;
+  const formattedDateReceipt = formatDateReceiptLongEs(summary.date);
+  const formattedTimeRange = `${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
+  const newSchedule = `${formatDateBogotaEs(summary.date)} · ${formattedTimeRange}`;
+  const prevSchedule = `${formatDateReceiptLongEs(previousDate)} · ${formatTime12h(previousStartTime)} – ${formatTime12h(previousEndTime)}`;
+  const priceLabel = formatCurrencyCOP(summary.priceCop);
+  const priceDurationLabel = `${priceLabel} · ${summary.durationMinutes} min`;
 
   const clientEmailClean = summary.clientEmail.trim().toLowerCase();
   let clientPayload: EmailMessagePayload | null = null;
 
   if (isValidDeliverableEmail(clientEmailClean)) {
-    const clientHtml = buildEmailLayout({
-      shopName: shop.shopName,
-      preheader: `Tu cita ${summary.bookingCode} fue reprogramada para el ${newSchedule}.`,
-      kicker: 'Cambio de horario confirmado',
-      title: `Tu cita fue reprogramada, ${summary.clientName}`,
-      intro: `Actualizamos tu turno correctamente y liberamos el horario anterior en nuestra agenda.`,
-      highlightLabel: 'Código de reserva',
-      highlightValue: summary.bookingCode,
-      rows: [
-        { label: 'Servicio', value: `${summary.serviceName} (${priceLabel})` },
-        { label: 'Barbero asignado', value: summary.barberName },
-        { label: 'Nuevo horario', value: newSchedule },
+    const clientHtml = buildClientReceiptEmailLayout({
+      shop,
+      preheader: `Tu cita ${summary.bookingCode} fue reprogramada para el ${formattedDateReceipt} a las ${formatTime12h(summary.startTime)}.`,
+      title: `Cita reprogramada — ${shop.shopName}`,
+      greetingName: summary.clientName,
+      subtitleLine: 'Tu cita fue reprogramada exitosamente en:',
+      statusNote: 'Liberamos tu horario anterior en nuestra agenda automáticamente.',
+      appointmentDetails: [
+        { label: 'Fecha', value: formattedDateReceipt },
+        { label: 'Hora', value: formattedTimeRange },
         { label: 'Horario anterior', value: prevSchedule },
-        { label: 'Ubicación', value: `${shop.address}, ${shop.city}` },
+        { label: 'Barbero', value: summary.barberName },
+        { label: 'Dirección', value: `${shop.address} (${shop.city})` },
+        { label: 'Teléfono', value: shop.phone },
+        { label: 'Código de reserva', value: summary.bookingCode },
       ],
+      serviceName: summary.serviceName,
+      serviceDurationLabel: `${summary.durationMinutes} min`,
+      serviceBarberLabel: `Barbero: ${summary.barberName}`,
+      servicePriceLabel: priceLabel,
+      notes: summary.notes,
       ctaLabel: 'Ver o gestionar reserva',
       ctaUrl: manageUrl,
-      footerNote: `${shop.shopName} · ${shop.address}, ${shop.city} · Tel: ${shop.phone}.`,
     });
 
     const clientText = [
+      `Hola ${summary.clientName}`,
       `${shop.shopName} — Cita reprogramada`,
       `Código: ${summary.bookingCode}`,
       `Nuevo horario: ${newSchedule}`,
@@ -393,7 +588,7 @@ export function buildRescheduledEmailPayloads(params: {
       highlightValue: summary.bookingCode,
       rows: [
         { label: 'Cliente', value: `${summary.clientName} (${summary.clientPhone})` },
-        { label: 'Servicio', value: summary.serviceName },
+        { label: 'Servicio', value: `${summary.serviceName} (${priceDurationLabel})` },
         { label: 'Barbero', value: summary.barberName },
         { label: 'Nuevo horario', value: newSchedule },
         { label: 'Horario anterior', value: prevSchedule },
@@ -439,7 +634,10 @@ export function buildCancelledEmailPayloads(params: {
   const rebookUrl = `${baseUrl}/reservar`;
   const panelUrl = `${baseUrl}/login`;
 
-  const formattedSchedule = `${formatDateBogotaEs(summary.date)} · ${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
+  const formattedDateReceipt = formatDateReceiptLongEs(summary.date);
+  const formattedTimeRange = `${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
+  const formattedSchedule = `${formatDateBogotaEs(summary.date)} · ${formattedTimeRange}`;
+  const priceLabel = formatCurrencyCOP(summary.priceCop);
   const cancelledByLabel =
     cancelledBy === 'cliente'
       ? 'Cancelada por el cliente'
@@ -451,27 +649,38 @@ export function buildCancelledEmailPayloads(params: {
   let clientPayload: EmailMessagePayload | null = null;
 
   if (isValidDeliverableEmail(clientEmailClean)) {
-    const clientHtml = buildEmailLayout({
-      shopName: shop.shopName,
+    const clientStatusNote =
+      cancelledBy === 'cliente'
+        ? 'Confirmamos la cancelación de tu cita. Si deseas volver a agendar en otro horario, puedes hacerlo cuando prefieras.'
+        : 'Tu cita programada fue cancelada por el equipo de la barbería. Puedes elegir un nuevo turno en línea en cualquier momento.';
+
+    const clientHtml = buildClientReceiptEmailLayout({
+      shop,
       preheader: `Tu cita ${summary.bookingCode} fue cancelada.`,
-      kicker: 'Aviso de cancelación',
-      title: `Cita cancelada (${summary.bookingCode})`,
-      intro:
-        cancelledBy === 'cliente'
-          ? `Confirmamos la cancelación de tu cita en ${shop.shopName}. Si deseas volver a agendar en otro horario, puedes hacerlo cuando prefieras.`
-          : `Tu cita programada en ${shop.shopName} fue cancelada por el equipo de la barbería. Puedes elegir un nuevo turno en línea en cualquier momento.`,
-      rows: [
-        { label: 'Servicio', value: summary.serviceName },
+      title: `Cita cancelada — ${shop.shopName}`,
+      greetingName: summary.clientName,
+      subtitleLine: 'Tu cita fue cancelada en:',
+      statusNote: clientStatusNote,
+      accentTone: 'red',
+      appointmentDetails: [
+        { label: 'Fecha', value: formattedDateReceipt },
+        { label: 'Hora', value: formattedTimeRange },
         { label: 'Barbero', value: summary.barberName },
-        { label: 'Horario cancelado', value: formattedSchedule },
+        { label: 'Dirección', value: `${shop.address} (${shop.city})` },
+        { label: 'Teléfono', value: shop.phone },
+        { label: 'Código de reserva', value: summary.bookingCode },
         { label: 'Estado', value: 'Cancelada' },
       ],
+      serviceName: summary.serviceName,
+      serviceDurationLabel: `${summary.durationMinutes} min`,
+      serviceBarberLabel: `Barbero: ${summary.barberName}`,
+      servicePriceLabel: priceLabel,
       ctaLabel: 'Agendar una nueva cita',
       ctaUrl: rebookUrl,
-      footerNote: `${shop.shopName} · ${shop.address}, ${shop.city} · Tel: ${shop.phone}.`,
     });
 
     const clientText = [
+      `Hola ${summary.clientName}`,
       `${shop.shopName} — Cita cancelada`,
       `Código: ${summary.bookingCode}`,
       `Servicio: ${summary.serviceName}`,

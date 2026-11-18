@@ -418,6 +418,41 @@ export function ShopConfigClient({
           </div>
         </dl>
 
+        {(!emailStatus.resendConfigured ||
+          emailStatus.isSandboxSender ||
+          !emailStatus.hasAdminServiceAccount) && (
+          <div className="mt-4 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-xs leading-relaxed text-amber-950">
+            {!emailStatus.resendConfigured && (
+              <p>
+                <strong>Envío desactivado:</strong> falta definir la variable de
+                entorno <span className="font-mono">RESEND_API_KEY</span> en el
+                servidor. Hasta configurarla y reiniciar el servidor, no saldrán
+                correos automáticos al cliente ni al barbero.
+              </p>
+            )}
+            {emailStatus.resendConfigured && emailStatus.isSandboxSender && (
+              <p>
+                <strong>Remitente en modo prueba:</strong> estás usando{' '}
+                <span className="font-mono">onboarding@resend.dev</span>. Con ese
+                remitente, Resend solo entrega correos a la dirección dueña de tu
+                cuenta Resend. Para enviar a cualquier cliente y barbero, verifica tu
+                dominio en Resend y define{' '}
+                <span className="font-mono">RESEND_FROM_EMAIL</span>.
+              </p>
+            )}
+            {!emailStatus.hasAdminServiceAccount && (
+              <p>
+                <strong>Copia directa al barbero desde reservas públicas:</strong>{' '}
+                sin credenciales Admin en servidor, la lectura automática del
+                correo privado de cada barbero desde la ficha de usuario está
+                restringida; configura arriba el campo{' '}
+                <strong>Correo copia de nuevas citas</strong> para recibir aviso de
+                cada reserva nueva.
+              </p>
+            )}
+          </div>
+        )}
+
         {testMessage && (
           <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-900">
             <CheckCircle2

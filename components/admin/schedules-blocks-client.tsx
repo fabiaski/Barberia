@@ -5,6 +5,7 @@ import {
   CalendarOff,
   CheckCircle2,
   Loader2,
+  Pencil,
   Plus,
   Save,
   Trash2,
@@ -14,7 +15,7 @@ import {
   parseJsonResponseSafe,
   translateErrorMessageEs,
 } from '@/lib/utils/error-es';
-import { formatTime12h } from '@/lib/utils/timezone';
+import { formatTime12h, getBogotaDateString } from '@/lib/utils/timezone';
 import type { AdminBarberRecord } from '@/services/admin';
 import type { DaySchedule, ScheduleBlock, WorkSchedule } from '@/types';
 
@@ -40,11 +41,16 @@ export function SchedulesBlocksClient({
   const [blockStart, setBlockStart] = useState<string>('12:00');
   const [blockEnd, setBlockEnd] = useState<string>('14:00');
   const [blockReason, setBlockReason] = useState<string>('');
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [confirmDeleteBlockId, setConfirmDeleteBlockId] = useState<string | null>(
+    null
+  );
 
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [savingBlock, setSavingBlock] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const todayBogota = getBogotaDateString(new Date());
 
   const updateDayField = (
     dayOfWeek: number,
@@ -91,14 +97,53 @@ export function SchedulesBlocksClient({
     }
   };
 
-  const handleCreateBlock = async (e: React.FormEvent) => {
+  const upsertSortedBlock = (
+    prevBlocks: ScheduleBlock[],
+    nextBlock: ScheduleBlock
+  ): ScheduleBlock[] => {
+    const filtered = prevBlocks.filter((b) => b.id !== nextBlock.id);
+    return [...filtered, nextBlock].sort((a, b) =>
+      `${a.date}_${a.startTime ?? '00:00'}`.localeCompare(
+        `${b.date}_${b.startTime ?? '00:00'}`
+      )
+    );
+  };
+
+  const handleStartEditBlock = (block: ScheduleBlock) => {
+    setConfirmDeleteBlockId(null);
+    setMessage('');
+    setError('');
+    setEditingBlockId(block.id);
+    setBlockBarberId(block.barberId);
+    setBlockDate(block.date);
+    setBlockAllDay(block.allDay);
+    setBlockStart(block.startTime ?? '12:00');
+    setBlockEnd(block.endTime ?? '14:00');
+    setBlockReason(block.reason);
+  };
+
+  const handleCancelEditBlock = () => {
+    setEditingBlockId(null);
+    setBlockBarberId('all');
+    setBlockDate('');
+    setBlockAllDay(true);
+    setBlockStart('12:00');
+    setBlockEnd('14:00');
+    setBlockReason('');
+  };
+
+  const handleCreateOrUpdateBlock = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingBlock(true);
     setMessage('');
     setError('');
+    const isEditing = Boolean(editingBlockId);
     try {
-      const res = await fetch('/api/admin/bloqueos', {
-        method: 'POST',
+      const endpoint = isEditing
+        ? `/api/admin/bloqueos/${editingBlockId}`
+        : '/api/admin/bloqueos';
+      const res = await fetch(endpoint, {
+        method: isEditing ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
@@ -111,17 +156,30 @@ export function SchedulesBlocksClient({
         }),
       });
       const data =
-        (await parseJsonResponseSafe<{ message?: string; error?: string }>(
-          res
-        )) ?? {};
+        (await parseJsonResponseSafe<{
+          message?: string;
+          error?: string;
+          block?: ScheduleBlock;
+        }>(res)) ?? {};
       if (!res.ok) {
         throw new Error(
-          translateErrorMessageEs(data.error, 'Error al crear el bloqueo.')
+          translateErrorMessageEs(
+            data.error,
+            isEditing
+              ? 'Error al actualizar el bloqueo.'
+              : 'Error al crear el bloqueo.'
+          )
         );
+      }
+
+      if (data.block) {
+        const savedBlock = data.block;
+        setBlocks((prev) => upsertSortedBlock(prev, savedBlock));
       }
 
       const listRes = await fetch('/api/admin/bloqueos', {
         credentials: 'include',
+        cache: 'no-store',
       });
       const listData = await parseJsonResponseSafe<{
         blocks?: ScheduleBlock[];
@@ -130,12 +188,19 @@ export function SchedulesBlocksClient({
         setBlocks(listData.blocks);
       }
 
-      setBlockDate('');
-      setBlockReason('');
-      setMessage(data.message || 'Bloqueo agregado.');
+      handleCancelEditBlock();
+      setMessage(
+        data.message ||
+          (isEditing ? 'Bloqueo actualizado.' : 'Bloqueo agregado.')
+      );
     } catch (err) {
       setError(
-        translateErrorMessageEs(err, 'No fue posible crear el bloqueo.')
+        translateErrorMessageEs(
+          err,
+          isEditing
+            ? 'No fue posible actualizar el bloqueo.'
+            : 'No fue posible crear el bloqueo.'
+        )
       );
     } finally {
       setSavingBlock(false);
@@ -159,6 +224,10 @@ export function SchedulesBlocksClient({
         throw new Error(
           translateErrorMessageEs(data.error, 'Error al eliminar el bloqueo.')
         );
+      }
+      setConfirmDeleteBlockId(null);
+      if (editingBlockId === blockId) {
+        handleCancelEditBlock();
       }
       setBlocks((prev) => prev.filter((b) => b.id !== blockId));
       setMessage(data.message || 'Bloqueo eliminado.');
@@ -329,14 +398,25 @@ export function SchedulesBlocksClient({
 
       <div className="grid gap-6 lg:grid-cols-12">
         <form
-          onSubmit={handleCreateBlock}
+          onSubmit={handleCreateOrUpdateBlock}
           className="rounded-xl border border-stone-200 bg-white p-6 lg:col-span-5"
         >
-          <div className="flex items-center gap-2">
-            <CalendarOff className="h-4 w-4 text-amber-700" aria-hidden="true" />
-            <h2 className="text-base font-semibold text-stone-900">
-              Bloquear fecha u horario
-            </h2>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CalendarOff className="h-4 w-4 text-amber-700" aria-hidden="true" />
+              <h2 className="text-base font-semibold text-stone-900">
+                {editingBlockId ? 'Modificar bloqueo' : 'Bloquear fecha u horario'}
+              </h2>
+            </div>
+            {editingBlockId && (
+              <button
+                type="button"
+                onClick={handleCancelEditBlock}
+                className="text-xs font-medium text-stone-600 underline underline-offset-2 hover:text-stone-900"
+              >
+                Cancelar edición
+              </button>
+            )}
           </div>
 
           <div className="mt-4 space-y-4">
@@ -373,6 +453,7 @@ export function SchedulesBlocksClient({
                 id="blk-date"
                 type="date"
                 required
+                min={todayBogota}
                 value={blockDate}
                 onChange={(e) => setBlockDate(e.target.value)}
                 className="mt-1.5 min-h-[42px] w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900"
@@ -446,25 +527,47 @@ export function SchedulesBlocksClient({
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={savingBlock}
-              className="inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-stone-800 disabled:opacity-60"
-            >
-              {savingBlock ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="submit"
+                disabled={savingBlock}
+                className="inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-stone-800 disabled:opacity-60"
+              >
+                {savingBlock ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : editingBlockId ? (
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>
+                  {editingBlockId ? 'Guardar cambios' : 'Registrar bloqueo'}
+                </span>
+              </button>
+
+              {editingBlockId && (
+                <button
+                  type="button"
+                  disabled={savingBlock}
+                  onClick={handleCancelEditBlock}
+                  className="inline-flex min-h-[42px] items-center justify-center rounded-lg border border-stone-300 bg-white px-4 text-xs font-medium text-stone-700 hover:bg-stone-50"
+                >
+                  Cancelar
+                </button>
               )}
-              <span>Registrar bloqueo</span>
-            </button>
+            </div>
           </div>
         </form>
 
         <div className="rounded-xl border border-stone-200 bg-white p-6 lg:col-span-7">
-          <h2 className="text-base font-semibold text-stone-900">
-            Bloqueos programados ({blocks.length})
-          </h2>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-base font-semibold text-stone-900">
+              Bloqueos programados ({blocks.length})
+            </h2>
+            <p className="text-[11px] text-stone-500">
+              Se eliminan automáticamente al pasar la fecha del bloqueo.
+            </p>
+          </div>
 
           {blocks.length === 0 ? (
             <p className="mt-4 text-sm text-stone-500">
@@ -472,35 +575,75 @@ export function SchedulesBlocksClient({
             </p>
           ) : (
             <div className="mt-4 divide-y divide-stone-100">
-              {blocks.map((block) => (
-                <div
-                  key={block.id}
-                  className="flex items-center justify-between gap-4 py-3 text-sm"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium text-stone-900">
-                      <span className="font-mono tabular-nums">{block.date}</span>{' '}
-                      · {resolveBarberName(block.barberId)}
-                    </p>
-                    <p className="mt-0.5 text-xs text-stone-500">
-                      {block.allDay
-                        ? 'Todo el día'
-                        : `${formatTime12h(block.startTime ?? '')} – ${formatTime12h(block.endTime ?? '')}`}{' '}
-                      · {block.reason}
-                    </p>
-                  </div>
+              {blocks.map((block) => {
+                const isEditingThis = editingBlockId === block.id;
+                const confirmingDelete = confirmDeleteBlockId === block.id;
 
-                  <button
-                    type="button"
-                    disabled={savingBlock}
-                    onClick={() => handleDeleteBlock(block.id)}
-                    aria-label={`Eliminar bloqueo ${block.date}`}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                return (
+                  <div
+                    key={block.id}
+                    className={`flex flex-col gap-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between ${
+                      isEditingThis ? 'rounded-lg bg-amber-50/60 px-2' : ''
+                    }`}
                   >
-                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
+                    <div className="min-w-0">
+                      <p className="font-medium text-stone-900">
+                        <span className="font-mono tabular-nums">{block.date}</span>{' '}
+                        · {resolveBarberName(block.barberId)}
+                      </p>
+                      <p className="mt-0.5 text-xs text-stone-500">
+                        {block.allDay
+                          ? 'Todo el día'
+                          : `${formatTime12h(block.startTime ?? '')} – ${formatTime12h(block.endTime ?? '')}`}{' '}
+                        · {block.reason}
+                      </p>
+                    </div>
+
+                    {confirmingDelete ? (
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={savingBlock}
+                          onClick={() => handleDeleteBlock(block.id)}
+                          className="min-h-[32px] rounded-md bg-red-700 px-2.5 text-xs font-semibold text-white hover:bg-red-800 disabled:opacity-50"
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingBlock}
+                          onClick={() => setConfirmDeleteBlockId(null)}
+                          className="min-h-[32px] rounded-md border border-stone-300 bg-white px-2.5 text-xs text-stone-700"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={savingBlock}
+                          onClick={() => handleStartEditBlock(block)}
+                          aria-label={`Modificar bloqueo ${block.date}`}
+                          className="inline-flex h-8 items-center gap-1 rounded-lg border border-stone-300 px-2.5 text-xs font-medium text-stone-700 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-900 disabled:opacity-50"
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Modificar</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingBlock}
+                          onClick={() => setConfirmDeleteBlockId(block.id)}
+                          aria-label={`Eliminar bloqueo ${block.date}`}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

@@ -113,6 +113,31 @@ export type BlockValidationResult =
       error: string;
     };
 
+export function isExpiredScheduleBlock(
+  date: string,
+  todayBogota = getBogotaDateString(new Date())
+): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && date < todayBogota;
+}
+
+export function partitionExpiredScheduleBlocks<T extends { date: string }>(
+  blocks: T[],
+  todayBogota = getBogotaDateString(new Date())
+): { activeBlocks: T[]; expiredBlocks: T[] } {
+  const activeBlocks: T[] = [];
+  const expiredBlocks: T[] = [];
+
+  for (const block of blocks) {
+    if (isExpiredScheduleBlock(block.date, todayBogota)) {
+      expiredBlocks.push(block);
+    } else {
+      activeBlocks.push(block);
+    }
+  }
+
+  return { activeBlocks, expiredBlocks };
+}
+
 export function validateAndComputeBlockedSlots(params: {
   barberId: string; // ID del barbero o 'all'
   date: string;
@@ -124,6 +149,8 @@ export function validateAndComputeBlockedSlots(params: {
   minServiceDurationMinutes?: number;
   existingAppointments: BlockValidationAppointmentRef[];
   existingBlocks: BlockValidationExistingBlockRef[];
+  excludeBlockId?: string;
+  actionVerb?: 'guardado' | 'actualizado';
   now?: Date;
 }): BlockValidationResult {
   const {
@@ -137,6 +164,8 @@ export function validateAndComputeBlockedSlots(params: {
     minServiceDurationMinutes,
     existingAppointments,
     existingBlocks,
+    excludeBlockId,
+    actionVerb = 'guardado',
     now = new Date(),
   } = params;
 
@@ -248,6 +277,7 @@ export function validateAndComputeBlockedSlots(params: {
 
   // 2. Verificar bloqueos duplicados o redundantes que ya cubran exactamente este rango
   const relevantExistingBlocks = existingBlocks.filter((b) => {
+    if (excludeBlockId && b.id === excludeBlockId) return false;
     if (b.date !== date) return false;
     if (barberId === 'all') {
       return b.barberId === 'all';
@@ -332,12 +362,11 @@ export function validateAndComputeBlockedSlots(params: {
     const lastLabel = formatTime12h(deactivatedSlots[deactivatedCount - 1]);
     const rangeText =
       deactivatedCount === 1 ? firstLabel : `${firstLabel} a ${lastLabel}`;
-    summaryMessage = `Bloqueo guardado. Se desactivaron automáticamente ${deactivatedCount} ${
+    summaryMessage = `Bloqueo ${actionVerb}. Se desactivaron automáticamente ${deactivatedCount} ${
       deactivatedCount === 1 ? 'turno disponible' : 'turnos disponibles'
     } (${rangeText}), impidiendo nuevas reservas públicas en ese lapso.`;
   } else {
-    summaryMessage =
-      'Bloqueo guardado correctamente. No había turnos públicos habilitados en ese horario, y el lapso quedó protegido contra futuras reservas.';
+    summaryMessage = `Bloqueo ${actionVerb} correctamente. No había turnos públicos habilitados en ese horario, y el lapso quedó protegido contra futuras reservas.`;
   }
 
   return {

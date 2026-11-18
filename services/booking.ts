@@ -465,6 +465,24 @@ export async function checkAvailability(
       ),
     ]);
 
+  if (hasAdminServiceAccount()) {
+    void serverQueryCollection('bloqueos', {
+      filters: [{ field: 'date', op: '<', value: todayBogota }],
+      limit: 50,
+    })
+      .then((expiredDocs) => {
+        if (expiredDocs.length === 0) return;
+        return serverCommitWrites(
+          expiredDocs.map((doc) => ({
+            type: 'delete',
+            collection: 'bloqueos',
+            docId: doc.id,
+          }))
+        );
+      })
+      .catch(() => undefined);
+  }
+
   const busyByBarber = new Map<string, BusyInterval[]>();
   for (const id of targetBarberIds) {
     busyByBarber.set(id, []);
@@ -672,10 +690,20 @@ export async function createAtomicBooking(
   input: CreateBookingInput,
   idToken?: string
 ): Promise<{ appointment: Appointment; summary: PublicBookingSummary }> {
-  const todayBogota = getBogotaDateString(new Date());
+  const nowBogota = new Date();
+  const todayBogota = getBogotaDateString(nowBogota);
+  const nowMinutesBogota = timeToMinutes(getBogotaTimeString(nowBogota));
   if (input.date < todayBogota) {
     throw new BookingValidationError(
       'No es posible agendar reservas en fechas pasadas.'
+    );
+  }
+  if (
+    input.date === todayBogota &&
+    timeToMinutes(input.startTime) <= nowMinutesBogota
+  ) {
+    throw new BookingValidationError(
+      'El horario seleccionado ya transcurrió. Elige otra franja disponible.'
     );
   }
 
@@ -1340,10 +1368,20 @@ export async function reschedulePublicBooking(
     );
   }
 
-  const todayBogota = getBogotaDateString(new Date());
+  const nowBogota = new Date();
+  const todayBogota = getBogotaDateString(nowBogota);
+  const nowMinutesBogota = timeToMinutes(getBogotaTimeString(nowBogota));
   if (newSlot.date < todayBogota) {
     throw new BookingValidationError(
       'No puedes reprogramar una cita para una fecha pasada.'
+    );
+  }
+  if (
+    newSlot.date === todayBogota &&
+    timeToMinutes(newSlot.startTime) <= nowMinutesBogota
+  ) {
+    throw new BookingValidationError(
+      'El horario seleccionado para hoy ya transcurrió. Elige otra franja disponible.'
     );
   }
 

@@ -1,6 +1,6 @@
 import 'server-only';
 import { cookies } from 'next/headers';
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import firebaseAppletConfig from '@/firebase-applet-config.json';
 import {
   getAdminDb,
@@ -43,6 +43,7 @@ export type ServerBatchOperation =
       docId: string;
       data: Record<string, unknown>;
       serverTimestampFields?: string[];
+      deleteFields?: string[];
     }
   | {
       type: 'delete';
@@ -260,7 +261,10 @@ function buildRestWriteOperation(op: ServerBatchOperation): Record<string, unkno
   const serverTimestampFields = op.serverTimestampFields ?? [];
   const serverFieldSet = new Set(serverTimestampFields);
   const fields = toFirestoreFields(op.data, serverFieldSet);
-  const fieldPaths = Object.keys(fields);
+  const deleteFields = op.type === 'update' ? (op.deleteFields ?? []) : [];
+  const fieldPaths = Array.from(
+    new Set([...Object.keys(fields), ...deleteFields])
+  );
 
   const writeObj: Record<string, unknown> = {
     update: {
@@ -291,7 +295,8 @@ function buildRestWriteOperation(op: ServerBatchOperation): Record<string, unkno
 
 function normalizeAdminData(
   data: Record<string, unknown>,
-  serverTimestampFields: string[] = []
+  serverTimestampFields: string[] = [],
+  deleteFields: string[] = []
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const now = Timestamp.now();
@@ -302,6 +307,9 @@ function normalizeAdminData(
   }
   for (const field of serverTimestampFields) {
     out[field] = now;
+  }
+  for (const field of deleteFields) {
+    out[field] = FieldValue.delete();
   }
   return out;
 }
@@ -442,7 +450,11 @@ export async function serverCommitWrites(
       } else if (op.type === 'update') {
         batch.update(
           ref,
-          normalizeAdminData(op.data, op.serverTimestampFields)
+          normalizeAdminData(
+            op.data,
+            op.serverTimestampFields,
+            op.deleteFields
+          )
         );
       } else if (op.preconditionExists === false) {
         batch.create(
@@ -504,7 +516,7 @@ export async function serverUpdateDoc(
   collectionName: string,
   docId: string,
   data: Record<string, unknown>,
-  options: { serverTimestampFields?: string[] } = {},
+  options: { serverTimestampFields?: string[]; deleteFields?: string[] } = {},
   idToken?: string
 ): Promise<void> {
   await serverCommitWrites(
@@ -515,6 +527,7 @@ export async function serverUpdateDoc(
         docId,
         data,
         serverTimestampFields: options.serverTimestampFields,
+        deleteFields: options.deleteFields,
       },
     ],
     idToken
