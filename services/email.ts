@@ -1,11 +1,12 @@
 import 'server-only';
 import { Resend } from 'resend';
 import { hasAdminServiceAccount } from '@/lib/firebase-admin';
-import { serverGetDoc } from '@/lib/firestore-server';
+import { serverGetDoc, serverQueryCollection } from '@/lib/firestore-server';
 import {
   buildCancelledEmailPayloads,
   buildConfirmationEmailPayloads,
   buildRescheduledEmailPayloads,
+  buildStaffConfirmationEmailPayload,
   buildTestEmailPayload,
   cleanEnvValue,
   DEFAULT_SHOP_EMAIL_CONTEXT,
@@ -36,21 +37,33 @@ export interface ResendLikeClient {
 export interface EmailDispatchResult {
   sent: boolean;
   clientSent: boolean;
+  adminSent?: boolean;
+  barberSent?: boolean;
   staffSent: boolean;
   skipped?: boolean;
+  delegatedToFunctions?: boolean;
   reason?: string;
   recipients: string[];
   error?: string;
   clientError?: string;
+  adminError?: string;
 }
 
 export interface EmailServiceStatus {
   resendConfigured: boolean;
+  delegatedToFunctions: boolean;
   fromEmail: string;
   isSandboxSender: boolean;
   hasAdminServiceAccount: boolean;
   envAdminNotificationEmail: string;
   appUrl: string;
+}
+
+export function isEmailDelegatedToFunctions(): boolean {
+  return (
+    cleanEnvValue(process.env.EMAIL_DISPATCH_VIA_FUNCTIONS).toLowerCase() ===
+    'true'
+  );
 }
 
 function getResendClient(override?: ResendLikeClient): ResendLikeClient | null {
@@ -64,6 +77,7 @@ export function getEmailServiceStatus(): EmailServiceStatus {
   const fromEmail = getConfiguredFromEmail();
   return {
     resendConfigured: Boolean(cleanEnvValue(process.env.RESEND_API_KEY)),
+    delegatedToFunctions: isEmailDelegatedToFunctions(),
     fromEmail,
     isSandboxSender: fromEmail.toLowerCase().includes('onboarding@resend.dev'),
     hasAdminServiceAccount: hasAdminServiceAccount(),
@@ -80,7 +94,12 @@ async function resolveShopAndStaffRecipients(params: {
   idToken?: string;
   shopOverride?: Partial<ShopEmailContext>;
   skipShopLookup?: boolean;
-}): Promise<{ shop: ShopEmailContext; staffRecipients: string[] }> {
+}): Promise<{
+  shop: ShopEmailContext;
+  adminEmail?: string;
+  barberEmail?: string;
+  staffRecipients: string[];
+}> {
   const fallbackAdminEmail = cleanEnvValue(process.env.ADMIN_NOTIFICATION_EMAIL);
   const shop: ShopEmailContext = {
     ...DEFAULT_SHOP_EMAIL_CONTEXT,
@@ -122,12 +141,56 @@ async function resolveShopAndStaffRecipients(params: {
     }
   }
 
-  const staffSet = new Set<string>();
-
+  let adminEmail: string | undefined;
   if (isValidDeliverableEmail(shop.adminNotificationEmail)) {
-    staffSet.add(shop.adminNotificationEmail.trim().toLowerCase());
+    adminEmail = shop.adminNotificationEmail.trim().toLowerCase();
   }
 
+  // Respaldo: buscar el correo del administrador activo si no hubo correo explícito
+  if (
+    !adminEmail &&
+    !params.skipShopLookup &&
+    (hasAdminServiceAccount() || params.idToken)
+  ) {
+    try {
+      const adminUsers = await serverQueryCollection(
+        'usuarios',
+        {
+          filters: [
+            { field: 'role', op: '==', value: 'admin' },
+            { field: 'active', op: '==', value: true },
+          ],
+          limit: 3,
+        },
+        params.idToken
+      );
+      for (const adminDoc of adminUsers) {
+        const candidate = String(adminDoc.data?.email ?? '')
+          .trim()
+          .toLowerCase();
+        if (
+          isValidDeliverableEmail(candidate) &&
+          candidate !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail
+        ) {
+          adminEmail = candidate;
+          break;
+        }
+      }
+    } catch {
+      // Ignorar si no tiene permisos de lectura sobre usuarios
+    }
+  }
+
+  if (
+    !adminEmail &&
+    !params.skipShopLookup &&
+    isValidDeliverableEmail(shop.shopEmail) &&
+    shop.shopEmail.trim().toLowerCase() !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail
+  ) {
+    adminEmail = shop.shopEmail.trim().toLowerCase();
+  }
+
+  let barberEmail: string | undefined;
   if (!params.skipShopLookup && (hasAdminServiceAccount() || params.idToken)) {
     try {
       let resolvedUid = params.barberUid?.trim() || '';
@@ -148,18 +211,18 @@ async function resolveShopAndStaffRecipients(params: {
           resolvedUid,
           params.idToken
         );
-        const barberEmail = String(userSnap.data?.email ?? '')
+        const candidate = String(userSnap.data?.email ?? '')
           .trim()
           .toLowerCase();
         const syntheticFallback = params.barberId
           ? `${params.barberId}@barberiaestudio.co`
           : '';
         if (
-          isValidDeliverableEmail(barberEmail) &&
-          barberEmail !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail &&
-          barberEmail !== syntheticFallback
+          isValidDeliverableEmail(candidate) &&
+          candidate !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail &&
+          candidate !== syntheticFallback
         ) {
-          staffSet.add(barberEmail);
+          barberEmail = candidate;
         }
       }
     } catch {
@@ -167,19 +230,14 @@ async function resolveShopAndStaffRecipients(params: {
     }
   }
 
-  // Si no se resolvió ningún correo de barbero o administrador, usar el correo público
-  // configurado de la barbería (cuando difiere del valor genérico de plantilla).
-  if (
-    !params.skipShopLookup &&
-    staffSet.size === 0 &&
-    isValidDeliverableEmail(shop.shopEmail) &&
-    shop.shopEmail.trim().toLowerCase() !== DEFAULT_SHOP_EMAIL_CONTEXT.shopEmail
-  ) {
-    staffSet.add(shop.shopEmail.trim().toLowerCase());
-  }
+  const staffSet = new Set<string>();
+  if (adminEmail) staffSet.add(adminEmail);
+  if (barberEmail) staffSet.add(barberEmail);
 
   return {
     shop,
+    adminEmail,
+    barberEmail,
     staffRecipients: Array.from(staffSet),
   };
 }
@@ -232,11 +290,27 @@ export async function sendBookingConfirmationEmails(params: {
   shopOverride?: Partial<ShopEmailContext>;
   skipShopLookup?: boolean;
 }): Promise<EmailDispatchResult> {
+  if (!params.resendClient && isEmailDelegatedToFunctions()) {
+    return {
+      sent: false,
+      clientSent: false,
+      adminSent: false,
+      barberSent: false,
+      staffSent: false,
+      skipped: true,
+      delegatedToFunctions: true,
+      reason: 'Despacho automático delegado a Firebase Cloud Functions.',
+      recipients: [],
+    };
+  }
+
   const resend = getResendClient(params.resendClient);
   if (!resend) {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       skipped: true,
       reason: 'RESEND_API_KEY no configurada',
@@ -256,7 +330,7 @@ export async function sendBookingConfirmationEmails(params: {
     const baseUrl = resolveAppBaseUrl(requestOrigin);
     const fromEmail = getConfiguredFromEmail();
 
-    const { shop, staffRecipients } = await resolveShopAndStaffRecipients({
+    const { shop, adminEmail, barberEmail } = await resolveShopAndStaffRecipients({
       barberId: summary.barberId,
       barberUid,
       idToken,
@@ -264,22 +338,58 @@ export async function sendBookingConfirmationEmails(params: {
       skipShopLookup,
     });
 
-    const { clientPayload, staffPayload } = buildConfirmationEmailPayloads({
+    const { clientPayload } = buildConfirmationEmailPayloads({
       summary,
       shop,
       fromEmail,
       baseUrl,
-      staffRecipients,
+      staffRecipients: [],
     });
+
+    const adminPayload = adminEmail
+      ? buildStaffConfirmationEmailPayload({
+          summary,
+          shop,
+          fromEmail,
+          baseUrl,
+          recipients: [adminEmail],
+          targetRole: 'admin',
+        })
+      : null;
+
+    const barberPayload =
+      barberEmail && barberEmail !== adminEmail
+        ? buildStaffConfirmationEmailPayload({
+            summary,
+            shop,
+            fromEmail,
+            baseUrl,
+            recipients: [barberEmail],
+            targetRole: 'barbero',
+          })
+        : null;
 
     const sentRecipients: string[] = [];
     const errors: string[] = [];
     let clientSent = false;
-    let staffSent = false;
+    let adminSent = false;
+    let barberSent = false;
     let clientError: string | undefined;
+    let adminError: string | undefined;
 
-    if (clientPayload) {
-      const clientRes = await safeSendSingleEmail(resend, clientPayload);
+    const [clientRes, adminRes, barberRes] = await Promise.all([
+      clientPayload
+        ? safeSendSingleEmail(resend, clientPayload)
+        : Promise.resolve(null),
+      adminPayload
+        ? safeSendSingleEmail(resend, adminPayload)
+        : Promise.resolve(null),
+      barberPayload
+        ? safeSendSingleEmail(resend, barberPayload)
+        : Promise.resolve(null),
+    ]);
+
+    if (clientPayload && clientRes) {
       if (clientRes.ok) {
         clientSent = true;
         sentRecipients.push(...clientPayload.to);
@@ -291,22 +401,36 @@ export async function sendBookingConfirmationEmails(params: {
       clientError = 'El cliente no tiene un correo electrónico válido registrado.';
     }
 
-    if (staffPayload) {
-      const staffRes = await safeSendSingleEmail(resend, staffPayload);
-      if (staffRes.ok) {
-        staffSent = true;
-        sentRecipients.push(...staffPayload.to);
-      } else if (staffRes.error) {
-        errors.push(staffRes.error);
+    if (adminPayload && adminRes) {
+      if (adminRes.ok) {
+        adminSent = true;
+        sentRecipients.push(...adminPayload.to);
+      } else if (adminRes.error) {
+        adminError = adminRes.error;
+        errors.push(adminRes.error);
       }
     }
+
+    if (barberPayload && barberRes) {
+      if (barberRes.ok) {
+        barberSent = true;
+        sentRecipients.push(...barberPayload.to);
+      } else if (barberRes.error) {
+        errors.push(barberRes.error);
+      }
+    }
+
+    const staffSent = adminSent || barberSent;
 
     return {
       sent: sentRecipients.length > 0,
       clientSent,
+      adminSent,
+      barberSent,
       staffSent,
       recipients: sentRecipients,
       ...(clientError ? { clientError } : {}),
+      ...(adminError ? { adminError } : {}),
       ...(errors.length > 0 ? { error: errors.join('; ') } : {}),
     };
   } catch (err) {
@@ -317,6 +441,8 @@ export async function sendBookingConfirmationEmails(params: {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       recipients: [],
       clientError: translated,
@@ -337,11 +463,27 @@ export async function sendBookingRescheduledEmails(params: {
   shopOverride?: Partial<ShopEmailContext>;
   skipShopLookup?: boolean;
 }): Promise<EmailDispatchResult> {
+  if (!params.resendClient && isEmailDelegatedToFunctions()) {
+    return {
+      sent: false,
+      clientSent: false,
+      adminSent: false,
+      barberSent: false,
+      staffSent: false,
+      skipped: true,
+      delegatedToFunctions: true,
+      reason: 'Despacho automático delegado a Firebase Cloud Functions.',
+      recipients: [],
+    };
+  }
+
   const resend = getResendClient(params.resendClient);
   if (!resend) {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       skipped: true,
       reason: 'RESEND_API_KEY no configurada',
@@ -364,7 +506,7 @@ export async function sendBookingRescheduledEmails(params: {
     const baseUrl = resolveAppBaseUrl(requestOrigin);
     const fromEmail = getConfiguredFromEmail();
 
-    const { shop, staffRecipients } = await resolveShopAndStaffRecipients({
+    const { shop, adminEmail, barberEmail } = await resolveShopAndStaffRecipients({
       barberId: summary.barberId,
       barberUid,
       idToken,
@@ -372,7 +514,7 @@ export async function sendBookingRescheduledEmails(params: {
       skipShopLookup,
     });
 
-    const { clientPayload, staffPayload } = buildRescheduledEmailPayloads({
+    const { clientPayload } = buildRescheduledEmailPayloads({
       summary,
       previousDate,
       previousStartTime,
@@ -380,17 +522,56 @@ export async function sendBookingRescheduledEmails(params: {
       shop,
       fromEmail,
       baseUrl,
-      staffRecipients,
+      staffRecipients: [],
     });
+
+    const adminPayload = adminEmail
+      ? buildRescheduledEmailPayloads({
+          summary,
+          previousDate,
+          previousStartTime,
+          previousEndTime,
+          shop,
+          fromEmail,
+          baseUrl,
+          staffRecipients: [adminEmail],
+        }).staffPayload
+      : null;
+
+    const barberPayload =
+      barberEmail && barberEmail !== adminEmail
+        ? buildRescheduledEmailPayloads({
+            summary,
+            previousDate,
+            previousStartTime,
+            previousEndTime,
+            shop,
+            fromEmail,
+            baseUrl,
+            staffRecipients: [barberEmail],
+          }).staffPayload
+        : null;
 
     const sentRecipients: string[] = [];
     const errors: string[] = [];
     let clientSent = false;
-    let staffSent = false;
+    let adminSent = false;
+    let barberSent = false;
     let clientError: string | undefined;
 
-    if (clientPayload) {
-      const clientRes = await safeSendSingleEmail(resend, clientPayload);
+    const [clientRes, adminRes, barberRes] = await Promise.all([
+      clientPayload
+        ? safeSendSingleEmail(resend, clientPayload)
+        : Promise.resolve(null),
+      adminPayload
+        ? safeSendSingleEmail(resend, adminPayload)
+        : Promise.resolve(null),
+      barberPayload
+        ? safeSendSingleEmail(resend, barberPayload)
+        : Promise.resolve(null),
+    ]);
+
+    if (clientPayload && clientRes) {
       if (clientRes.ok) {
         clientSent = true;
         sentRecipients.push(...clientPayload.to);
@@ -402,20 +583,30 @@ export async function sendBookingRescheduledEmails(params: {
       clientError = 'El cliente no tiene un correo electrónico válido registrado.';
     }
 
-    if (staffPayload) {
-      const staffRes = await safeSendSingleEmail(resend, staffPayload);
-      if (staffRes.ok) {
-        staffSent = true;
-        sentRecipients.push(...staffPayload.to);
-      } else if (staffRes.error) {
-        errors.push(staffRes.error);
+    if (adminPayload && adminRes) {
+      if (adminRes.ok) {
+        adminSent = true;
+        sentRecipients.push(...adminPayload.to);
+      } else if (adminRes.error) {
+        errors.push(adminRes.error);
+      }
+    }
+
+    if (barberPayload && barberRes) {
+      if (barberRes.ok) {
+        barberSent = true;
+        sentRecipients.push(...barberPayload.to);
+      } else if (barberRes.error) {
+        errors.push(barberRes.error);
       }
     }
 
     return {
       sent: sentRecipients.length > 0,
       clientSent,
-      staffSent,
+      adminSent,
+      barberSent,
+      staffSent: adminSent || barberSent,
       recipients: sentRecipients,
       ...(clientError ? { clientError } : {}),
       ...(errors.length > 0 ? { error: errors.join('; ') } : {}),
@@ -428,6 +619,8 @@ export async function sendBookingRescheduledEmails(params: {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       recipients: [],
       clientError: translated,
@@ -446,11 +639,27 @@ export async function sendBookingCancelledEmails(params: {
   shopOverride?: Partial<ShopEmailContext>;
   skipShopLookup?: boolean;
 }): Promise<EmailDispatchResult> {
+  if (!params.resendClient && isEmailDelegatedToFunctions()) {
+    return {
+      sent: false,
+      clientSent: false,
+      adminSent: false,
+      barberSent: false,
+      staffSent: false,
+      skipped: true,
+      delegatedToFunctions: true,
+      reason: 'Despacho automático delegado a Firebase Cloud Functions.',
+      recipients: [],
+    };
+  }
+
   const resend = getResendClient(params.resendClient);
   if (!resend) {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       skipped: true,
       reason: 'RESEND_API_KEY no configurada',
@@ -471,7 +680,7 @@ export async function sendBookingCancelledEmails(params: {
     const baseUrl = resolveAppBaseUrl(requestOrigin);
     const fromEmail = getConfiguredFromEmail();
 
-    const { shop, staffRecipients } = await resolveShopAndStaffRecipients({
+    const { shop, adminEmail, barberEmail } = await resolveShopAndStaffRecipients({
       barberId: summary.barberId,
       barberUid,
       idToken,
@@ -479,23 +688,58 @@ export async function sendBookingCancelledEmails(params: {
       skipShopLookup,
     });
 
-    const { clientPayload, staffPayload } = buildCancelledEmailPayloads({
+    const { clientPayload } = buildCancelledEmailPayloads({
       summary,
       cancelledBy,
       shop,
       fromEmail,
       baseUrl,
-      staffRecipients,
+      staffRecipients: [],
     });
+
+    const adminPayload = adminEmail
+      ? buildCancelledEmailPayloads({
+          summary,
+          cancelledBy,
+          shop,
+          fromEmail,
+          baseUrl,
+          staffRecipients: [adminEmail],
+        }).staffPayload
+      : null;
+
+    const barberPayload =
+      barberEmail && barberEmail !== adminEmail
+        ? buildCancelledEmailPayloads({
+            summary,
+            cancelledBy,
+            shop,
+            fromEmail,
+            baseUrl,
+            staffRecipients: [barberEmail],
+          }).staffPayload
+        : null;
 
     const sentRecipients: string[] = [];
     const errors: string[] = [];
     let clientSent = false;
-    let staffSent = false;
+    let adminSent = false;
+    let barberSent = false;
     let clientError: string | undefined;
 
-    if (clientPayload) {
-      const clientRes = await safeSendSingleEmail(resend, clientPayload);
+    const [clientRes, adminRes, barberRes] = await Promise.all([
+      clientPayload
+        ? safeSendSingleEmail(resend, clientPayload)
+        : Promise.resolve(null),
+      adminPayload
+        ? safeSendSingleEmail(resend, adminPayload)
+        : Promise.resolve(null),
+      barberPayload
+        ? safeSendSingleEmail(resend, barberPayload)
+        : Promise.resolve(null),
+    ]);
+
+    if (clientPayload && clientRes) {
       if (clientRes.ok) {
         clientSent = true;
         sentRecipients.push(...clientPayload.to);
@@ -507,20 +751,30 @@ export async function sendBookingCancelledEmails(params: {
       clientError = 'El cliente no tiene un correo electrónico válido registrado.';
     }
 
-    if (staffPayload) {
-      const staffRes = await safeSendSingleEmail(resend, staffPayload);
-      if (staffRes.ok) {
-        staffSent = true;
-        sentRecipients.push(...staffPayload.to);
-      } else if (staffRes.error) {
-        errors.push(staffRes.error);
+    if (adminPayload && adminRes) {
+      if (adminRes.ok) {
+        adminSent = true;
+        sentRecipients.push(...adminPayload.to);
+      } else if (adminRes.error) {
+        errors.push(adminRes.error);
+      }
+    }
+
+    if (barberPayload && barberRes) {
+      if (barberRes.ok) {
+        barberSent = true;
+        sentRecipients.push(...barberPayload.to);
+      } else if (barberRes.error) {
+        errors.push(barberRes.error);
       }
     }
 
     return {
       sent: sentRecipients.length > 0,
       clientSent,
-      staffSent,
+      adminSent,
+      barberSent,
+      staffSent: adminSent || barberSent,
       recipients: sentRecipients,
       ...(clientError ? { clientError } : {}),
       ...(errors.length > 0 ? { error: errors.join('; ') } : {}),
@@ -533,6 +787,8 @@ export async function sendBookingCancelledEmails(params: {
     return {
       sent: false,
       clientSent: false,
+      adminSent: false,
+      barberSent: false,
       staffSent: false,
       recipients: [],
       clientError: translated,

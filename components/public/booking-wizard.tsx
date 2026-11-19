@@ -444,6 +444,7 @@ export function BookingWizard({
           sent?: boolean;
           clientSent?: boolean;
           skipped?: boolean;
+          delegatedToFunctions?: boolean;
           reason?: string;
           clientError?: string;
           error?: string;
@@ -468,9 +469,11 @@ export function BookingWizard({
         return;
       }
 
+      const delegated = Boolean(payload.emailNotification?.delegatedToFunctions);
       const emailWasSentToClient = Boolean(
-        payload.emailNotification?.clientSent ??
-          payload.emailNotification?.sent
+        delegated ||
+          (payload.emailNotification?.clientSent ??
+            payload.emailNotification?.sent)
       );
       setConfirmedSummary(payload.summary);
       setConfirmationEmailSent(emailWasSentToClient);

@@ -11,7 +11,10 @@ import { createBookingManageToken } from '@/lib/auth/manage-token';
 import { adminUpdateAppointmentStatusSchema } from '@/lib/validators/admin';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { getAdminAppointmentsAndReport } from '@/services/admin';
-import { sendBookingCancelledEmails } from '@/services/email';
+import {
+  sendBookingCancelledEmails,
+  sendBookingConfirmationEmails,
+} from '@/services/email';
 import { AppointmentStatus, UserRole } from '@/types';
 
 export async function GET(request: NextRequest) {
@@ -139,45 +142,56 @@ export async function PATCH(request: NextRequest) {
     await serverCommitWrites(ops, authResult.idToken);
 
     const previousStatus = String(apptSnap.data?.status ?? '');
+    const emailPayloadSummary = apptSnap.data
+      ? {
+          id: appointmentId,
+          bookingCode: String(
+            apptSnap.data.bookingCode ??
+              appointmentId.slice(0, 8).toUpperCase()
+          ),
+          serviceId: String(apptSnap.data.serviceId ?? ''),
+          serviceName: String(apptSnap.data.serviceName ?? ''),
+          priceCop: Number(apptSnap.data.priceCop ?? 0),
+          durationMinutes: Number(apptSnap.data.durationMinutes ?? 30),
+          barberId: String(apptSnap.data.barberId ?? ''),
+          barberName: String(apptSnap.data.barberName ?? ''),
+          date: String(apptSnap.data.date ?? ''),
+          startTime: String(apptSnap.data.startTime ?? ''),
+          endTime: String(apptSnap.data.endTime ?? ''),
+          status,
+          notes: apptSnap.data.notes ? String(apptSnap.data.notes) : undefined,
+          clientName: String(apptSnap.data.clientName ?? ''),
+          clientPhone: String(apptSnap.data.clientPhone ?? ''),
+          clientEmail: String(apptSnap.data.clientEmail ?? ''),
+          canModify: status === AppointmentStatus.CONFIRMED,
+          manageToken: createBookingManageToken(
+            appointmentId,
+            String(apptSnap.data.clientEmail ?? '')
+          ),
+        }
+      : null;
+
     const emailNotification =
+      emailPayloadSummary &&
       status === AppointmentStatus.CANCELLED &&
-      previousStatus !== AppointmentStatus.CANCELLED &&
-      apptSnap.data
+      previousStatus !== AppointmentStatus.CANCELLED
         ? await sendBookingCancelledEmails({
-            summary: {
-              id: appointmentId,
-              bookingCode: String(
-                apptSnap.data.bookingCode ??
-                  appointmentId.slice(0, 8).toUpperCase()
-              ),
-              serviceId: String(apptSnap.data.serviceId ?? ''),
-              serviceName: String(apptSnap.data.serviceName ?? ''),
-              priceCop: Number(apptSnap.data.priceCop ?? 0),
-              durationMinutes: Number(apptSnap.data.durationMinutes ?? 30),
-              barberId: String(apptSnap.data.barberId ?? ''),
-              barberName: String(apptSnap.data.barberName ?? ''),
-              date: String(apptSnap.data.date ?? ''),
-              startTime: String(apptSnap.data.startTime ?? ''),
-              endTime: String(apptSnap.data.endTime ?? ''),
-              status: AppointmentStatus.CANCELLED,
-              notes: apptSnap.data.notes
-                ? String(apptSnap.data.notes)
-                : undefined,
-              clientName: String(apptSnap.data.clientName ?? ''),
-              clientPhone: String(apptSnap.data.clientPhone ?? ''),
-              clientEmail: String(apptSnap.data.clientEmail ?? ''),
-              canModify: false,
-              manageToken: createBookingManageToken(
-                appointmentId,
-                String(apptSnap.data.clientEmail ?? '')
-              ),
-            },
+            summary: emailPayloadSummary,
             cancelledBy: 'admin',
-            barberUid: String(apptSnap.data.barberUid ?? ''),
+            barberUid: String(apptSnap.data?.barberUid ?? ''),
             idToken: authResult.idToken,
             requestOrigin: request.nextUrl.origin,
           })
-        : undefined;
+        : emailPayloadSummary &&
+            status === AppointmentStatus.CONFIRMED &&
+            previousStatus !== AppointmentStatus.CONFIRMED
+          ? await sendBookingConfirmationEmails({
+              summary: emailPayloadSummary,
+              barberUid: String(apptSnap.data?.barberUid ?? ''),
+              idToken: authResult.idToken,
+              requestOrigin: request.nextUrl.origin,
+            })
+          : undefined;
 
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',

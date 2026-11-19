@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   CalendarClock,
+  CalendarDays,
   ExternalLink,
   LayoutDashboard,
   LogOut,
@@ -24,6 +25,7 @@ interface AdminShellProps {
 
 const ADMIN_NAV = [
   { href: '/admin', label: 'Resumen y reportes', icon: LayoutDashboard },
+  { href: '/admin/calendario', label: 'Calendario mensual', icon: CalendarDays },
   { href: '/admin/barberos', label: 'Barberos', icon: Users },
   { href: '/admin/servicios', label: 'Servicios', icon: Scissors },
   { href: '/admin/clientes', label: 'Clientes', icon: UserRound },

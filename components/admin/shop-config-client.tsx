@@ -373,7 +373,17 @@ export function ShopConfigClient({
           </div>
 
           <div className="flex items-center gap-2 text-xs font-medium">
-            {emailStatus.resendConfigured ? (
+            {emailStatus.delegatedToFunctions ? (
+              <>
+                <CheckCircle2
+                  className="h-4 w-4 text-emerald-700"
+                  aria-hidden="true"
+                />
+                <span className="text-emerald-800">
+                  Despacho automático vía Cloud Functions
+                </span>
+              </>
+            ) : emailStatus.resendConfigured ? (
               <>
                 <CheckCircle2
                   className="h-4 w-4 text-emerald-700"
@@ -418,11 +428,12 @@ export function ShopConfigClient({
           </div>
         </dl>
 
-        {(!emailStatus.resendConfigured ||
+        {((!emailStatus.resendConfigured && !emailStatus.delegatedToFunctions) ||
           emailStatus.isSandboxSender ||
-          !emailStatus.hasAdminServiceAccount) && (
+          (!emailStatus.hasAdminServiceAccount &&
+            !emailStatus.delegatedToFunctions)) && (
           <div className="mt-4 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-xs leading-relaxed text-amber-950">
-            {!emailStatus.resendConfigured && (
+            {!emailStatus.resendConfigured && !emailStatus.delegatedToFunctions && (
               <p>
                 <strong>Envío desactivado:</strong> falta definir la variable de
                 entorno <span className="font-mono">RESEND_API_KEY</span> en el

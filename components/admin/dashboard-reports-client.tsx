@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Filter, Loader2, RefreshCw } from 'lucide-react';
+import { CalendarDays, Filter, List, Loader2, RefreshCw } from 'lucide-react';
+import { AdminMonthlyCalendar } from '@/components/admin/monthly-calendar-client';
 import { APPOINTMENT_STATUS_LABELS } from '@/lib/constants/config';
 import {
   parseJsonResponseSafe,
@@ -33,6 +34,7 @@ export function DashboardReportsClient({
   const [appointments, setAppointments] =
     useState<Appointment[]>(initialAppointments);
   const [summary, setSummary] = useState<AdminReportSummary>(initialSummary);
+  const [agendaView, setAgendaView] = useState<'calendar' | 'list'>('calendar');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
   const [barberFilter, setBarberFilter] = useState<string>('all');
@@ -107,21 +109,32 @@ export function DashboardReportsClient({
         (await parseJsonResponseSafe<{
           message?: string;
           error?: string;
-          emailNotification?: { sent?: boolean; clientSent?: boolean };
+          emailNotification?: {
+            sent?: boolean;
+            clientSent?: boolean;
+            adminSent?: boolean;
+            barberSent?: boolean;
+          };
         }>(response)) ?? {};
       if (!response.ok) {
         throw new Error(
           translateErrorMessageEs(data.error, 'No se pudo actualizar la cita.')
         );
       }
-      const clientNotified =
-        newStatus === AppointmentStatus.CANCELLED &&
-        Boolean(data.emailNotification?.clientSent);
+      const notifiedTargets: string[] = [];
+      if (data.emailNotification?.clientSent) notifiedTargets.push('cliente');
+      if (data.emailNotification?.adminSent) notifiedTargets.push('administrador');
+      if (data.emailNotification?.barberSent) notifiedTargets.push('barbero');
+      const emailKind =
+        newStatus === AppointmentStatus.CANCELLED
+          ? 'aviso de cancelación'
+          : 'confirmación';
+
       await applyFilters();
       setStatusNotice(
         `${data.message || 'Estado de la cita actualizado correctamente.'}${
-          clientNotified
-            ? ' Se envió aviso de cancelación al cliente por correo.'
+          notifiedTargets.length > 0
+            ? ` Se envió ${emailKind} por correo a: ${notifiedTargets.join(', ')}.`
             : ''
         }`
       );
@@ -398,16 +411,66 @@ export function DashboardReportsClient({
       </section>
 
       <section className="rounded-xl border border-stone-200 bg-white p-6">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-base font-semibold text-stone-900">
-            Listado de citas ({appointments.length})
-          </h2>
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-stone-200 pb-4">
+          <div>
+            <h2 className="text-base font-semibold text-stone-900">
+              Agenda de citas ({appointments.length})
+            </h2>
+            <p className="mt-0.5 text-xs text-stone-500">
+              Alterna entre el calendario mensual interactivo y el listado tabular detallado.
+            </p>
+          </div>
+
+          <div
+            role="tablist"
+            aria-label="Modo de visualización de citas"
+            className="inline-flex rounded-lg border border-stone-200 bg-stone-50 p-1"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={agendaView === 'calendar'}
+              onClick={() => setAgendaView('calendar')}
+              className={`inline-flex min-h-[36px] items-center gap-1.5 whitespace-nowrap shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                agendaView === 'calendar'
+                  ? 'bg-stone-900 text-stone-50'
+                  : 'text-stone-600 hover:text-stone-900'
+              }`}
+            >
+              <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Calendario mensual</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={agendaView === 'list'}
+              onClick={() => setAgendaView('list')}
+              className={`inline-flex min-h-[36px] items-center gap-1.5 whitespace-nowrap shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                agendaView === 'list'
+                  ? 'bg-stone-900 text-stone-50'
+                  : 'text-stone-600 hover:text-stone-900'
+              }`}
+            >
+              <List className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Listado</span>
+            </button>
+          </div>
         </div>
 
-        {appointments.length === 0 ? (
+        {agendaView === 'calendar' ? (
+          <div className="mt-6">
+            <AdminMonthlyCalendar
+              initialAppointments={appointments}
+              barbers={barbers}
+              todayBogota={todayBogota}
+              embedded
+              onAppointmentUpdated={() => applyFilters()}
+            />
+          </div>
+        ) : appointments.length === 0 ? (
           <p className="mt-4 text-sm text-stone-500">
             No se encontraron citas con los filtros actuales. Cuando los clientes
-            reserven en /reservar (Etapa 6), aparecerán aquí en tiempo real.
+            reserven en /reservar, aparecerán aquí en tiempo real.
           </p>
         ) : (
           <div className="mt-4 overflow-x-auto">

@@ -291,7 +291,11 @@ export function ManageBookingPanel({
           summary?: PublicBookingSummary;
           message?: string;
           error?: string;
-          emailNotification?: { sent?: boolean; clientSent?: boolean };
+          emailNotification?: {
+            sent?: boolean;
+            clientSent?: boolean;
+            delegatedToFunctions?: boolean;
+          };
         }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
@@ -305,7 +309,9 @@ export function ManageBookingPanel({
       }
 
       const clientNotified = Boolean(
-        payload.emailNotification?.clientSent ?? payload.emailNotification?.sent
+        payload.emailNotification?.delegatedToFunctions ||
+          (payload.emailNotification?.clientSent ??
+            payload.emailNotification?.sent)
       );
       setSummary(payload.summary);
       setConfirmCancelOpen(false);
@@ -355,7 +361,11 @@ export function ManageBookingPanel({
           message?: string;
           error?: string;
           code?: string;
-          emailNotification?: { sent?: boolean; clientSent?: boolean };
+          emailNotification?: {
+            sent?: boolean;
+            clientSent?: boolean;
+            delegatedToFunctions?: boolean;
+          };
         }>(res)) ?? {};
 
       if (!res.ok || !payload.summary) {
@@ -372,7 +382,9 @@ export function ManageBookingPanel({
       }
 
       const clientNotified = Boolean(
-        payload.emailNotification?.clientSent ?? payload.emailNotification?.sent
+        payload.emailNotification?.delegatedToFunctions ||
+          (payload.emailNotification?.clientSent ??
+            payload.emailNotification?.sent)
       );
       setSummary(payload.summary);
       setRescheduleOpen(false);

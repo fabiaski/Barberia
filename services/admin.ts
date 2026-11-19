@@ -364,6 +364,7 @@ export async function getAdminAppointmentsAndReport(
       endTime: String(d.endTime ?? ''),
       status: String(d.status ?? AppointmentStatus.CONFIRMED) as AppointmentStatus,
       notes: d.notes ? String(d.notes) : undefined,
+      bookingCode: d.bookingCode ? String(d.bookingCode) : undefined,
       createdAt: serializeTimestamp(d.createdAt),
       updatedAt: serializeTimestamp(d.updatedAt),
     };

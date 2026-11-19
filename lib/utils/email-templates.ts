@@ -381,7 +381,6 @@ export function buildConfirmationEmailPayloads(params: {
     summary.manageToken ||
     createBookingManageToken(summary.id, summary.clientEmail);
   const manageUrl = `${baseUrl}/reservar?gestionar=1&token=${encodeURIComponent(manageToken)}`;
-  const panelUrl = `${baseUrl}/login`;
 
   const formattedDateReceipt = formatDateReceiptLongEs(summary.date);
   const formattedTimeRange = `${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
@@ -445,49 +444,100 @@ export function buildConfirmationEmailPayloads(params: {
 
   let staffPayload: EmailMessagePayload | null = null;
   if (staffRecipients.length > 0) {
-    const staffHtml = buildEmailLayout({
-      shopName: shop.shopName,
-      preheader: `Nueva cita ${summary.bookingCode} con ${summary.barberName} (${formattedSchedule}).`,
-      kicker: 'Aviso de agenda interna',
-      title: `Nueva cita reservada: ${summary.clientName}`,
-      intro: `Se registró una nueva cita en línea desde la plataforma pública. El horario ya quedó bloqueado automáticamente en Cloud Firestore.`,
-      highlightLabel: 'Código de cita',
-      highlightValue: summary.bookingCode,
-      rows: [
-        { label: 'Cliente', value: summary.clientName },
-        { label: 'Teléfono', value: summary.clientPhone },
-        { label: 'Correo', value: summary.clientEmail },
-        { label: 'Servicio', value: `${summary.serviceName} (${priceDurationLabel})` },
-        { label: 'Barbero', value: summary.barberName },
-        { label: 'Fecha y horario', value: formattedSchedule },
-        ...(summary.notes
-          ? [{ label: 'Indicaciones', value: summary.notes }]
-          : []),
-      ],
-      ctaLabel: 'Abrir panel de agenda',
-      ctaUrl: panelUrl,
-      footerNote: `Notificación operativa automática de ${shop.shopName}.`,
+    staffPayload = buildStaffConfirmationEmailPayload({
+      summary,
+      shop,
+      fromEmail,
+      baseUrl,
+      recipients: staffRecipients,
+      targetRole: 'admin',
     });
-
-    const staffText = [
-      `Nueva cita agendada (${summary.bookingCode})`,
-      `Cliente: ${summary.clientName} (${summary.clientPhone} / ${summary.clientEmail})`,
-      `Servicio: ${summary.serviceName} (${priceDurationLabel})`,
-      `Barbero: ${summary.barberName}`,
-      `Horario: ${formattedSchedule}`,
-      `Panel: ${panelUrl}`,
-    ].join('\n');
-
-    staffPayload = {
-      from: fromEmail,
-      to: staffRecipients,
-      subject: `Nueva cita ${summary.bookingCode} · ${summary.clientName} (${formatTime12h(summary.startTime)})`,
-      html: staffHtml,
-      text: staffText,
-    };
   }
 
   return { clientPayload, staffPayload, manageUrl };
+}
+
+export function buildStaffConfirmationEmailPayload(params: {
+  summary: PublicBookingSummary;
+  shop: ShopEmailContext;
+  fromEmail: string;
+  baseUrl: string;
+  recipients: string[];
+  targetRole: 'admin' | 'barbero';
+}): EmailMessagePayload | null {
+  const { summary, shop, fromEmail, baseUrl, recipients, targetRole } = params;
+  const cleanRecipients = Array.from(
+    new Set(
+      recipients
+        .map((r) => r.trim().toLowerCase())
+        .filter((r) => isValidDeliverableEmail(r))
+    )
+  );
+  if (cleanRecipients.length === 0) return null;
+
+  const formattedTimeRange = `${formatTime12h(summary.startTime)} – ${formatTime12h(summary.endTime)}`;
+  const formattedSchedule = `${formatDateBogotaEs(summary.date)} · ${formattedTimeRange}`;
+  const priceLabel = formatCurrencyCOP(summary.priceCop);
+  const priceDurationLabel = `${priceLabel} · ${summary.durationMinutes} min`;
+
+  const isBarber = targetRole === 'barbero';
+  const panelUrl = isBarber ? `${baseUrl}/barbero` : `${baseUrl}/admin`;
+  const kicker = isBarber
+    ? 'Aviso para tu agenda personal'
+    : 'Confirmación administrativa de cita';
+  const title = isBarber
+    ? `Nueva cita asignada: ${summary.clientName}`
+    : `Nueva cita confirmada: ${summary.clientName}`;
+  const intro = isBarber
+    ? `Se confirmó un servicio contigo y el turno ya quedó reservado automáticamente en tu agenda.`
+    : `Se registró y confirmó una nueva cita en línea. El horario quedó bloqueado automáticamente en la agenda.`;
+  const ctaLabel = isBarber
+    ? 'Abrir mi agenda de barbero'
+    : 'Abrir panel administrativo';
+  const subject = isBarber
+    ? `Nueva cita asignada ${summary.bookingCode} · ${summary.clientName} (${formatTime12h(summary.startTime)})`
+    : `Nueva cita ${summary.bookingCode} · ${summary.clientName} (${formatTime12h(summary.startTime)})`;
+
+  const staffHtml = buildEmailLayout({
+    shopName: shop.shopName,
+    preheader: `Nueva cita ${summary.bookingCode} con ${summary.barberName} (${formattedSchedule}).`,
+    kicker,
+    title,
+    intro,
+    highlightLabel: 'Código de cita',
+    highlightValue: summary.bookingCode,
+    rows: [
+      { label: 'Cliente', value: summary.clientName },
+      { label: 'Teléfono', value: summary.clientPhone },
+      { label: 'Correo', value: summary.clientEmail },
+      { label: 'Servicio', value: `${summary.serviceName} (${priceDurationLabel})` },
+      { label: 'Barbero', value: summary.barberName },
+      { label: 'Fecha y horario', value: formattedSchedule },
+      ...(summary.notes
+        ? [{ label: 'Indicaciones', value: summary.notes }]
+        : []),
+    ],
+    ctaLabel,
+    ctaUrl: panelUrl,
+    footerNote: `Notificación operativa automática de ${shop.shopName}.`,
+  });
+
+  const staffText = [
+    `Nueva cita confirmada (${summary.bookingCode})`,
+    `Cliente: ${summary.clientName} (${summary.clientPhone} / ${summary.clientEmail})`,
+    `Servicio: ${summary.serviceName} (${priceDurationLabel})`,
+    `Barbero: ${summary.barberName}`,
+    `Horario: ${formattedSchedule}`,
+    `Panel: ${panelUrl}`,
+  ].join('\n');
+
+  return {
+    from: fromEmail,
+    to: cleanRecipients,
+    subject,
+    html: staffHtml,
+    text: staffText,
+  };
 }
 
 export function buildRescheduledEmailPayloads(params: {

@@ -42,6 +42,7 @@ test('Salud del sistema y páginas públicas responden 200 OK', async () => {
 test('Middleware y guardas RBAC protegen rutas privadas y APIs sin sesión', async () => {
   const protectedPages = [
     '/admin',
+    '/admin/calendario',
     '/admin/citas',
     '/admin/barberos',
     '/admin/servicios',

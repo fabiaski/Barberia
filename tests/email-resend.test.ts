@@ -4,6 +4,7 @@ import {
   buildCancelledEmailPayloads,
   buildConfirmationEmailPayloads,
   buildRescheduledEmailPayloads,
+  buildStaffConfirmationEmailPayload,
   DEFAULT_SHOP_EMAIL_CONTEXT,
   escapeHtml,
   resolveAppBaseUrl,
@@ -198,6 +199,8 @@ test('Integración Resend envía confirmación y cancelación al cliente y al eq
 
   assert.equal(confirmResult.sent, true);
   assert.equal(confirmResult.clientSent, true);
+  assert.equal(confirmResult.adminSent, true);
+  assert.equal(confirmResult.barberSent, false);
   assert.equal(confirmResult.staffSent, true);
   assert.deepEqual(confirmResult.recipients, [
     'camilo.torres@correo.co',
@@ -207,6 +210,20 @@ test('Integración Resend envía confirmación y cancelación al cliente y al eq
   assert.deepEqual(sentPayloads[0]?.to, ['camilo.torres@correo.co']);
   assert.equal(sentPayloads[0]?.replyTo, 'contacto@barberiaestudio.co');
   assert.match(sentPayloads[0]?.subject ?? '', /Cita confirmada \(BE-9X4K2M\)/);
+  assert.deepEqual(sentPayloads[1]?.to, ['admin@barberiaestudio.co']);
+  assert.match(sentPayloads[1]?.html ?? '', /\/admin/);
+
+  const barberRolePayload = buildStaffConfirmationEmailPayload({
+    summary: SAMPLE_SUMMARY,
+    shop: DEFAULT_SHOP_EMAIL_CONTEXT,
+    fromEmail: 'Barbería Estudio <reservas@barberiaestudio.co>',
+    baseUrl: 'https://barberia.test',
+    recipients: ['barbero@barberiaestudio.co'],
+    targetRole: 'barbero',
+  });
+  assert.ok(barberRolePayload);
+  assert.match(barberRolePayload.subject, /Nueva cita asignada BE-9X4K2M/);
+  assert.match(barberRolePayload.html, /https:\/\/barberia\.test\/barbero/);
 
   // Cancelación por administración
   const cancelResult = await sendBookingCancelledEmails({

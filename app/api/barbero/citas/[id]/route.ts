@@ -11,7 +11,10 @@ import { createBookingManageToken } from '@/lib/auth/manage-token';
 import { barberUpdateAppointmentStatusSchema } from '@/lib/validators/barbero';
 import { translateErrorMessageEs } from '@/lib/utils/error-es';
 import { buildOccupancySlotKeys } from '@/services/booking';
-import { sendBookingCancelledEmails } from '@/services/email';
+import {
+  sendBookingCancelledEmails,
+  sendBookingConfirmationEmails,
+} from '@/services/email';
 import { AppointmentStatus, UserRole } from '@/types';
 
 const TERMINAL_STATUSES = new Set<string>([
@@ -144,42 +147,52 @@ export async function PATCH(
 
     await serverCommitWrites(ops, authResult.idToken);
 
+    const emailSummary = {
+      id: appointmentId,
+      bookingCode: String(
+        apptData.bookingCode ?? appointmentId.slice(0, 8).toUpperCase()
+      ),
+      serviceId: String(apptData.serviceId ?? ''),
+      serviceName: String(apptData.serviceName ?? ''),
+      priceCop: Number(apptData.priceCop ?? 0),
+      durationMinutes: Number(apptData.durationMinutes ?? 30),
+      barberId: String(apptData.barberId ?? ''),
+      barberName: String(apptData.barberName ?? ''),
+      date: String(apptData.date ?? ''),
+      startTime: String(apptData.startTime ?? ''),
+      endTime: String(apptData.endTime ?? ''),
+      status: nextStatus,
+      notes: apptData.notes ? String(apptData.notes) : undefined,
+      clientName: String(apptData.clientName ?? ''),
+      clientPhone: String(apptData.clientPhone ?? ''),
+      clientEmail: String(apptData.clientEmail ?? ''),
+      canModify: nextStatus === AppointmentStatus.CONFIRMED,
+      manageToken: createBookingManageToken(
+        appointmentId,
+        String(apptData.clientEmail ?? '')
+      ),
+    };
+
     const emailNotification =
       nextStatus === AppointmentStatus.CANCELLED &&
       currentStatus !== AppointmentStatus.CANCELLED
         ? await sendBookingCancelledEmails({
-            summary: {
-              id: appointmentId,
-              bookingCode: String(
-                apptData.bookingCode ?? appointmentId.slice(0, 8).toUpperCase()
-              ),
-              serviceId: String(apptData.serviceId ?? ''),
-              serviceName: String(apptData.serviceName ?? ''),
-              priceCop: Number(apptData.priceCop ?? 0),
-              durationMinutes: Number(apptData.durationMinutes ?? 30),
-              barberId: String(apptData.barberId ?? ''),
-              barberName: String(apptData.barberName ?? ''),
-              date: String(apptData.date ?? ''),
-              startTime: String(apptData.startTime ?? ''),
-              endTime: String(apptData.endTime ?? ''),
-              status: AppointmentStatus.CANCELLED,
-              notes: apptData.notes ? String(apptData.notes) : undefined,
-              clientName: String(apptData.clientName ?? ''),
-              clientPhone: String(apptData.clientPhone ?? ''),
-              clientEmail: String(apptData.clientEmail ?? ''),
-              canModify: false,
-              manageToken: createBookingManageToken(
-                appointmentId,
-                String(apptData.clientEmail ?? '')
-              ),
-            },
+            summary: emailSummary,
             cancelledBy:
               authResult.user.role === UserRole.ADMIN ? 'admin' : 'barbero',
             barberUid: String(apptData.barberUid ?? ''),
             idToken: authResult.idToken,
             requestOrigin: request.nextUrl.origin,
           })
-        : undefined;
+        : nextStatus === AppointmentStatus.CONFIRMED &&
+            currentStatus !== AppointmentStatus.CONFIRMED
+          ? await sendBookingConfirmationEmails({
+              summary: emailSummary,
+              barberUid: String(apptData.barberUid ?? ''),
+              idToken: authResult.idToken,
+              requestOrigin: request.nextUrl.origin,
+            })
+          : undefined;
 
     return NextResponse.json({
       message: 'Estado de la cita actualizado correctamente.',
